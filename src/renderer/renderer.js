@@ -35,6 +35,27 @@ const FEATURE_COLORS = {
   _default:    { fill: [78, 204, 163, 100], line: [78, 204, 163, 220] }   // fallback teal
 };
 
+// ── Map styles ──
+const STREET_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
+const SATELLITE_STYLE = {
+  version: 8,
+  sources: {
+    'esri-satellite': {
+      type: 'raster',
+      tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+      tileSize: 256,
+      maxzoom: 19
+    }
+  },
+  layers: [{
+    id: 'esri-satellite-layer',
+    type: 'raster',
+    source: 'esri-satellite',
+    minzoom: 0,
+    maxzoom: 22
+  }]
+};
+
 // Initial view
 const INITIAL_VIEW = {
   longitude: -84.388,
@@ -53,8 +74,10 @@ function MapComponent() {
   const viewStateRef = React.useRef(INITIAL_VIEW);
   const drawJustFinishedRef = React.useRef(false);
   const pendingClickRef = React.useRef(null);
+  const satelliteInitRef = React.useRef(true);
 
   const [terrainEnabled, setTerrainEnabled] = React.useState(false);
+  const [satelliteEnabled, setSatelliteEnabled] = React.useState(false);
   const [activeMode, setActiveMode] = React.useState('view');
   const [geoJson, setGeoJson] = React.useState({
     type: 'FeatureCollection',
@@ -68,7 +91,7 @@ function MapComponent() {
     // MapLibre renders tiles but does NOT handle user interaction
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: 'https://tiles.openfreemap.org/styles/liberty',
+      style: STREET_STYLE,
       center: [INITIAL_VIEW.longitude, INITIAL_VIEW.latitude],
       zoom: INITIAL_VIEW.zoom,
       pitch: 0,
@@ -343,6 +366,47 @@ function MapComponent() {
     }
   }, [terrainEnabled]);
 
+  // ── Toggle satellite / street view ──
+  React.useEffect(() => {
+    // Skip the initial render – the map constructor already set the street style
+    if (satelliteInitRef.current) {
+      satelliteInitRef.current = false;
+      return;
+    }
+    const map = mapRef.current;
+    if (!map) return;
+
+    const style = satelliteEnabled ? SATELLITE_STYLE : STREET_STYLE;
+    map.setStyle(style);
+
+    // After the new style loads, re-apply terrain if it was enabled
+    map.once('style.load', () => {
+      if (terrainEnabledRef.current) {
+        if (!map.getSource('mapterhorn-dem')) {
+          map.addSource('mapterhorn-dem', {
+            type: 'raster-dem',
+            tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
+            encoding: 'terrarium',
+            tileSize: 512
+          });
+        }
+        if (!map.getLayer('mapterhorn-hillshade')) {
+          map.addLayer({
+            id: 'mapterhorn-hillshade',
+            type: 'hillshade',
+            source: 'mapterhorn-dem',
+            paint: {
+              'hillshade-exaggeration': 0.5,
+              'hillshade-shadow-color': '#000000',
+              'hillshade-highlight-color': '#ffffff'
+            }
+          });
+        }
+        map.setTerrain({ source: 'mapterhorn-dem', exaggeration: 1.5 });
+      }
+    });
+  }, [satelliteEnabled]);
+
   // ── Styles ──
   const toggleBtnStyle = {
     position: 'absolute',
@@ -355,6 +419,27 @@ function MapComponent() {
     background: terrainEnabled ? 'rgba(78, 204, 163, 0.9)' : 'rgba(26, 26, 46, 0.85)',
     color: '#fff',
     border: terrainEnabled ? '1px solid #4ecca3' : '1px solid rgba(255,255,255,0.25)',
+    borderRadius: '6px',
+    padding: '6px 12px',
+    cursor: 'pointer',
+    fontSize: '13px',
+    fontFamily: 'sans-serif',
+    fontWeight: 500,
+    backdropFilter: 'blur(4px)',
+    transition: 'background 0.2s, border 0.2s'
+  };
+
+  const satelliteBtnStyle = {
+    position: 'absolute',
+    top: '50px',
+    right: '10px',
+    zIndex: 2,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    background: satelliteEnabled ? 'rgba(59, 130, 246, 0.9)' : 'rgba(26, 26, 46, 0.85)',
+    color: '#fff',
+    border: satelliteEnabled ? '1px solid #3b82f6' : '1px solid rgba(255,255,255,0.25)',
     borderRadius: '6px',
     padding: '6px 12px',
     cursor: 'pointer',
@@ -451,7 +536,13 @@ function MapComponent() {
       style: toggleBtnStyle,
       onClick: function () { setTerrainEnabled(!terrainEnabled); },
       title: terrainEnabled ? 'Disable 3D Terrain' : 'Enable 3D Terrain'
-    }, terrainEnabled ? '\uD83C\uDF0D 3D' : '\uD83D\uDDFA\uFE0F 2D')
+    }, terrainEnabled ? '\uD83C\uDF0D 3D' : '\uD83D\uDDFA\uFE0F 2D'),
+    // Satellite toggle
+    React.createElement('button', {
+      style: satelliteBtnStyle,
+      onClick: function () { setSatelliteEnabled(!satelliteEnabled); },
+      title: satelliteEnabled ? 'Switch to Street Map' : 'Switch to Satellite'
+    }, satelliteEnabled ? '\uD83D\uDEF0\uFE0F Street' : '\uD83D\uDEF0\uFE0F Satellite')
   );
 }
 
