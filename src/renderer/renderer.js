@@ -39,6 +39,7 @@ function MapComponent() {
   const deckRef = React.useRef(null);
   const terrainEnabledRef = React.useRef(false);
   const viewStateRef = React.useRef(INITIAL_VIEW);
+  const drawJustFinishedRef = React.useRef(false);
 
   const [terrainEnabled, setTerrainEnabled] = React.useState(false);
   const [activeMode, setActiveMode] = React.useState('view');
@@ -47,6 +48,7 @@ function MapComponent() {
     features: []
   });
   const [selectedFeatureIndexes, setSelectedFeatureIndexes] = React.useState([]);
+  const [contextMenu, setContextMenu] = React.useState({ visible: false, x: 0, y: 0 });
 
   // ── Initialize map (tiles only) + standalone Deck (interaction + drawing) ──
   React.useEffect(() => {
@@ -97,6 +99,62 @@ function MapComponent() {
     };
   }, []);
 
+  // ── Double-click context menu on the map (only in view/modify mode) ──
+  React.useEffect(() => {
+    const container = deckContainerRef.current;
+    if (!container) return;
+
+    const handleDblClick = (e) => {
+      // Only show menu when not actively drawing (avoid conflict with finish-drawing double-click)
+      const mode = activeMode;
+      if (mode !== 'view' && mode !== 'modify') return;
+      // Suppress menu if a drawing just finished on this same double-click
+      if (drawJustFinishedRef.current) {
+        drawJustFinishedRef.current = false;
+        return;
+      }
+
+      // Check if a feature was double-clicked – if so, enter edit mode on it
+      const deck = deckRef.current;
+      if (deck) {
+        const rect = deckContainerRef.current.getBoundingClientRect();
+        const picked = deck.pickObject({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+        if (picked && picked.index != null && picked.index >= 0) {
+          setSelectedFeatureIndexes([picked.index]);
+          setActiveMode('modify');
+          return;
+        }
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+      setContextMenu({ visible: true, x: e.clientX, y: e.clientY });
+    };
+
+    const handleClick = () => {
+      setContextMenu((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+    };
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setContextMenu((prev) => ({ ...prev, visible: false }));
+        // Exit any drawing/modify mode back to view
+        setActiveMode((prev) => (prev !== 'view' ? 'view' : prev));
+        setSelectedFeatureIndexes([]);
+      }
+    };
+
+    container.addEventListener('dblclick', handleDblClick);
+    window.addEventListener('click', handleClick);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      container.removeEventListener('dblclick', handleDblClick);
+      window.removeEventListener('click', handleClick);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeMode]);
+
   // ── Update deck.gl layers whenever drawing state changes ──
   React.useEffect(() => {
     const deck = deckRef.current;
@@ -115,6 +173,7 @@ function MapComponent() {
         setGeoJson(updatedData);
         // After finishing a feature, switch to select mode
         if (editType === 'addFeature') {
+          drawJustFinishedRef.current = true;
           setActiveMode('view');
           setSelectedFeatureIndexes([updatedData.features.length - 1]);
         }
@@ -231,31 +290,6 @@ function MapComponent() {
     transition: 'background 0.2s, border 0.2s'
   };
 
-  const toolbarStyle = {
-    position: 'absolute',
-    top: '10px',
-    left: '10px',
-    zIndex: 2,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '4px'
-  };
-
-  const toolBtnStyle = (key) => ({
-    background: activeMode === key ? 'rgba(78, 204, 163, 0.9)' : 'rgba(26, 26, 46, 0.85)',
-    color: '#fff',
-    border: activeMode === key ? '1px solid #4ecca3' : '1px solid rgba(255,255,255,0.25)',
-    borderRadius: '6px',
-    padding: '6px 12px',
-    cursor: 'pointer',
-    fontSize: '13px',
-    fontFamily: 'sans-serif',
-    fontWeight: 500,
-    backdropFilter: 'blur(4px)',
-    transition: 'background 0.2s, border 0.2s',
-    textAlign: 'left'
-  });
-
   return React.createElement('div', {
     style: { position: 'relative', width: '100%', height: '600px', marginTop: '1rem' }
   },
@@ -270,17 +304,46 @@ function MapComponent() {
       ref: deckContainerRef,
       style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 1 }
     }),
-    // Drawing toolbar
-    React.createElement('div', { style: toolbarStyle },
-      Object.keys(MODES).map((key) =>
-        React.createElement('button', {
+    // Right-click context menu
+    contextMenu.visible && React.createElement('div', {
+      style: {
+        position: 'fixed',
+        top: contextMenu.y,
+        left: contextMenu.x,
+        zIndex: 10,
+        background: 'rgba(26, 26, 46, 0.95)',
+        border: '1px solid rgba(255,255,255,0.2)',
+        borderRadius: '8px',
+        padding: '4px 0',
+        minWidth: '160px',
+        boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+        backdropFilter: 'blur(8px)',
+        fontFamily: 'sans-serif',
+        fontSize: '13px'
+      },
+      onClick: (e) => e.stopPropagation()
+    },
+      React.createElement('div', {
+        style: { padding: '6px 12px', color: 'rgba(255,255,255,0.5)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }
+      }, 'Draw'),
+      ['polygon', 'line', 'point'].map((key) =>
+        React.createElement('div', {
           key,
-          style: toolBtnStyle(key),
+          style: {
+            padding: '8px 14px',
+            color: '#fff',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            transition: 'background 0.15s'
+          },
+          onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(78, 204, 163, 0.3)'; },
+          onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
           onClick: () => {
             setActiveMode(key);
-            if (key !== 'modify' && key !== 'view') {
-              setSelectedFeatureIndexes([]);
-            }
+            setSelectedFeatureIndexes([]);
+            setContextMenu({ visible: false, x: 0, y: 0 });
           }
         }, MODES[key].label)
       )
