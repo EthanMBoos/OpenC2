@@ -37,8 +37,8 @@ const FEATURE_COLORS = {
 
 // Initial view
 const INITIAL_VIEW = {
-  longitude: 13.388,
-  latitude: 52.517,
+  longitude: -84.388,
+  latitude: 33.749,
   zoom: 9.5,
   pitch: 0,
   bearing: 0
@@ -160,6 +160,15 @@ function MapComponent() {
         setActiveMode((prev) => (prev !== 'view' ? 'view' : prev));
         setSelectedFeatureIndexes([]);
       }
+      if ((e.key === 'Backspace' || e.key === 'Delete') && selectedFeatureIndexes.length > 0) {
+        e.preventDefault();
+        setGeoJson((prev) => ({
+          ...prev,
+          features: prev.features.filter((_, i) => !selectedFeatureIndexes.includes(i))
+        }));
+        setSelectedFeatureIndexes([]);
+        setActiveMode('view');
+      }
     };
 
     container.addEventListener('dblclick', handleDblClick);
@@ -171,7 +180,7 @@ function MapComponent() {
       window.removeEventListener('click', handleClick);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [activeMode]);
+  }, [activeMode, selectedFeatureIndexes]);
 
   // ── Update deck.gl layers whenever drawing state changes ──
   React.useEffect(() => {
