@@ -5,6 +5,8 @@ const ReactDOM = require('react-dom');
 // simple map component using MapLibre GL
 function MapComponent() {
   const mapContainerRef = React.useRef(null);
+  const mapRef = React.useRef(null);
+  const [terrainEnabled, setTerrainEnabled] = React.useState(false);
 
   React.useEffect(() => {
     // require so we don't need a bundler; it returns the Map class
@@ -15,16 +17,99 @@ function MapComponent() {
       center: [13.388, 52.517],
       zoom: 9.5
     });
+    mapRef.current = map;
 
     // cleanup on unmount
     return () => map.remove();
   }, []);
 
+  // Toggle terrain on/off when state changes
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    function applyTerrain() {
+      if (terrainEnabled) {
+        // Add Mapterhorn raster-dem source if not already present
+        if (!map.getSource('mapterhorn-dem')) {
+          map.addSource('mapterhorn-dem', {
+            type: 'raster-dem',
+            tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
+            encoding: 'terrarium',
+            tileSize: 512
+          });
+        }
+        // Add hillshade layer if not already present
+        if (!map.getLayer('mapterhorn-hillshade')) {
+          map.addLayer({
+            id: 'mapterhorn-hillshade',
+            type: 'hillshade',
+            source: 'mapterhorn-dem',
+            paint: {
+              'hillshade-exaggeration': 0.5,
+              'hillshade-shadow-color': '#000000',
+              'hillshade-highlight-color': '#ffffff'
+            }
+          });
+        }
+        // Enable 3D terrain
+        map.setTerrain({ source: 'mapterhorn-dem', exaggeration: 1.5 });
+      } else {
+        // Disable 3D terrain
+        map.setTerrain(null);
+        // Remove hillshade layer and DEM source
+        if (map.getLayer('mapterhorn-hillshade')) {
+          map.removeLayer('mapterhorn-hillshade');
+        }
+        if (map.getSource('mapterhorn-dem')) {
+          map.removeSource('mapterhorn-dem');
+        }
+      }
+    }
+
+    // If the map style is already loaded apply immediately, otherwise wait
+    if (map.isStyleLoaded()) {
+      applyTerrain();
+    } else {
+      map.once('style.load', applyTerrain);
+    }
+  }, [terrainEnabled]);
+
+  const toggleBtnStyle = {
+    position: 'absolute',
+    top: '10px',
+    right: '10px',
+    zIndex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    background: terrainEnabled ? 'rgba(78, 204, 163, 0.9)' : 'rgba(26, 26, 46, 0.85)',
+    color: '#fff',
+    border: terrainEnabled ? '1px solid #4ecca3' : '1px solid rgba(255,255,255,0.25)',
+    borderRadius: '6px',
+    padding: '6px 12px',
+    cursor: 'pointer',
+    fontSize: '13px',
+    fontFamily: 'sans-serif',
+    fontWeight: 500,
+    backdropFilter: 'blur(4px)',
+    transition: 'background 0.2s, border 0.2s'
+  };
+
   return React.createElement('div', {
-    id: 'map',
-    ref: mapContainerRef,
-    style: { width: '100%', height: '600px', marginTop: '1rem' }
-  });
+    style: { position: 'relative', width: '100%', height: '600px', marginTop: '1rem' }
+  },
+    React.createElement('div', {
+      id: 'map',
+      ref: mapContainerRef,
+      style: { width: '100%', height: '100%' }
+    }),
+    React.createElement('button', {
+      style: toggleBtnStyle,
+      onClick: function () { setTerrainEnabled(!terrainEnabled); },
+      title: terrainEnabled ? 'Disable 3D Terrain' : 'Enable 3D Terrain'
+    }, '\u26F0\uFE0F Terrain: ' + (terrainEnabled ? 'ON' : 'OFF'))
+  );
 }
 
 function App() {
