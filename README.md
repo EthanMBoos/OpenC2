@@ -124,3 +124,18 @@ OpenC2 is a research project. We welcome contributions that focus on performance
 1.  **Clone the repository:** `git clone https://github.com/EthanMBoos/OpenC2.git`
 2.  **Install dependencies:** `npm install`
 3.  **Launch dev environment:** `npm run dev`
+
+> **Electron**
+> After installing, start the Electron application with:
+> ```sh
+> npm start
+> ```
+> This opens the initial window where the React renderer is mounted. A placeholder message is shown; the map will be added here later.
+
+> **Map testing**
+> For early development you can point MapLibre at a public style URL such as the OpenFreeMap ’liberty’ style. The renderer already includes a `MapComponent` that loads:
+> ```js
+> style: 'https://tiles.openfreemap.org/styles/liberty'
+> ```
+> Once you switch to self-hosted tiles or your own style JSON, simply update the `style` property or intercept `tiles://` requests accordingly.
+
