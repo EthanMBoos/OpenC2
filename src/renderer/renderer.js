@@ -21,7 +21,8 @@ const MODES = {
   nfz:        { label: '\u26D4 NFZ',             mode: DrawPolygonMode },
   searchZone: { label: '\u{1F50D} Search Zone',   mode: DrawPolygonMode },
   route:      { label: '\u2192 Route',            mode: DrawLineStringMode },
-  searchPoint:{ label: '\u{1F4CD} Search Point',  mode: DrawPointMode }
+  searchPoint:{ label: '\u{1F4CD} Search Point',  mode: DrawPointMode },
+  geofence:   { label: '\u{1F6A7} Geofence',       mode: DrawPolygonMode }
 };
 
 // ── Per-feature-type color palette ──
@@ -30,6 +31,7 @@ const FEATURE_COLORS = {
   searchZone:  { fill: [59, 130, 246, 80],  line: [59, 130, 246, 220] },  // blue
   route:       { fill: [156, 163, 175, 80], line: [156, 163, 175, 220]},  // gray
   searchPoint: { fill: [59, 130, 246, 200], line: [59, 130, 246, 255] },  // blue
+  geofence:    { fill: [0, 0, 0, 0],        line: [255, 165, 0, 240]  },  // orange outline only
   _default:    { fill: [78, 204, 163, 100], line: [78, 204, 163, 220] }   // fallback teal
 };
 
@@ -50,6 +52,7 @@ function MapComponent() {
   const terrainEnabledRef = React.useRef(false);
   const viewStateRef = React.useRef(INITIAL_VIEW);
   const drawJustFinishedRef = React.useRef(false);
+  const pendingClickRef = React.useRef(null);
 
   const [terrainEnabled, setTerrainEnabled] = React.useState(false);
   const [activeMode, setActiveMode] = React.useState('view');
@@ -58,7 +61,7 @@ function MapComponent() {
     features: []
   });
   const [selectedFeatureIndexes, setSelectedFeatureIndexes] = React.useState([]);
-  const [contextMenu, setContextMenu] = React.useState({ visible: false, x: 0, y: 0 });
+  const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0 });
 
   // ── Initialize map (tiles only) + standalone Deck (interaction + drawing) ──
   React.useEffect(() => {
@@ -109,7 +112,7 @@ function MapComponent() {
     };
   }, []);
 
-  // ── Double-click context menu on the map (only in view/modify mode) ──
+  // ── Double-click mission editor menu on the map (only in view/modify mode) ──
   React.useEffect(() => {
     const container = deckContainerRef.current;
     if (!container) return;
@@ -136,18 +139,23 @@ function MapComponent() {
         }
       }
 
+      // Compute lng/lat at the double-click location for later use
+      const map = mapRef.current;
+      const containerRect = deckContainerRef.current.getBoundingClientRect();
+      const lngLat = map.unproject([e.clientX - containerRect.left, e.clientY - containerRect.top]);
+
       e.preventDefault();
       e.stopPropagation();
-      setContextMenu({ visible: true, x: e.clientX, y: e.clientY });
+      setMissionMenu({ visible: true, x: e.clientX, y: e.clientY, lngLat: [lngLat.lng, lngLat.lat] });
     };
 
     const handleClick = () => {
-      setContextMenu((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+      setMissionMenu((prev) => (prev.visible ? { ...prev, visible: false } : prev));
     };
 
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
-        setContextMenu((prev) => ({ ...prev, visible: false }));
+        setMissionMenu((prev) => ({ ...prev, visible: false }));
         // Exit any drawing/modify mode back to view
         setActiveMode((prev) => (prev !== 'view' ? 'view' : prev));
         setSelectedFeatureIndexes([]);
@@ -228,7 +236,7 @@ function MapComponent() {
       editHandlePointRadiusMinPixels: 4,
 
       pickable: true,
-      autoHighlight: true
+      autoHighlight: false
     });
 
     // Update cursor based on mode
@@ -238,6 +246,29 @@ function MapComponent() {
         ? () => 'crosshair'
         : ({ isDragging }) => isDragging ? 'grabbing' : 'grab'
     });
+
+    // If there's a pending first-click from the mission editor menu, simulate it
+    if (pendingClickRef.current && activeMode !== 'view' && activeMode !== 'modify') {
+      const pending = pendingClickRef.current;
+      pendingClickRef.current = null;
+      // Wait for deck.gl to finish processing the new layer/mode before dispatching
+      setTimeout(() => {
+        const canvas = deckContainerRef.current?.querySelector('canvas');
+        if (!canvas) return;
+        const opts = {
+          clientX: pending.screenX,
+          clientY: pending.screenY,
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          pointerType: 'mouse',
+          button: 0,
+          buttons: 1
+        };
+        canvas.dispatchEvent(new PointerEvent('pointerdown', opts));
+        canvas.dispatchEvent(new PointerEvent('pointerup', { ...opts, buttons: 0 }));
+      }, 80);
+    }
   }, [geoJson, activeMode, selectedFeatureIndexes]);
 
   // ── Toggle terrain on/off ──
@@ -339,12 +370,12 @@ function MapComponent() {
       ref: deckContainerRef,
       style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 1 }
     }),
-    // Right-click context menu
-    contextMenu.visible && React.createElement('div', {
+    // Mission editor menu
+    missionMenu.visible && React.createElement('div', {
       style: {
         position: 'fixed',
-        top: contextMenu.y,
-        left: contextMenu.x,
+        top: missionMenu.y,
+        left: missionMenu.x,
         zIndex: 10,
         background: 'rgba(26, 26, 46, 0.95)',
         border: '1px solid rgba(255,255,255,0.2)',
@@ -360,8 +391,8 @@ function MapComponent() {
     },
       React.createElement('div', {
         style: { padding: '6px 12px', color: 'rgba(255,255,255,0.5)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }
-      }, 'Draw'),
-      ['nfz', 'searchZone', 'route', 'searchPoint'].map((key) =>
+      }, 'Mission Objects'),
+      ['nfz', 'searchZone', 'geofence', 'route', 'searchPoint'].map((key) =>
         React.createElement('div', {
           key,
           style: {
@@ -376,9 +407,32 @@ function MapComponent() {
           onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(78, 204, 163, 0.3)'; },
           onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
           onClick: () => {
-            setActiveMode(key);
-            setSelectedFeatureIndexes([]);
-            setContextMenu({ visible: false, x: 0, y: 0 });
+            const clickLngLat = missionMenu.lngLat;
+            const clickScreenX = missionMenu.x;
+            const clickScreenY = missionMenu.y;
+            setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null });
+
+            if (key === 'searchPoint' && clickLngLat) {
+              // Place search point directly at double-click location
+              const newFeature = {
+                type: 'Feature',
+                geometry: { type: 'Point', coordinates: clickLngLat },
+                properties: { featureType: 'searchPoint' }
+              };
+              setGeoJson(prev => ({
+                ...prev,
+                features: [...prev.features, newFeature]
+              }));
+              setSelectedFeatureIndexes([geoJson.features.length]);
+              setActiveMode('view');
+            } else {
+              // For polygons/lines, schedule a synthetic first click at the double-click location
+              if (clickLngLat) {
+                pendingClickRef.current = { screenX: clickScreenX, screenY: clickScreenY };
+              }
+              setActiveMode(key);
+              setSelectedFeatureIndexes([]);
+            }
           }
         }, MODES[key].label)
       )
