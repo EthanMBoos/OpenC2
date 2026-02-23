@@ -88,7 +88,11 @@ Bypasses the "JSON bottleneck" by decoding binary streams directly into the appl
 * **Protocol Interceptor:** Maps `tiles://` requests directly to local storage, ensuring zero reliance on external networks or public APIs.
 
 ### 4. Tactical Markup
-* **Nebula.gl:** Mouse-driven 3D drawing for mission planning and real-time edits.
+Drawing and editing geographic features directly on the map using **`@deck.gl-community/editable-layers`** (the deck.gl v9 successor to Nebula.gl).
+
+* **Standalone Deck Instance:** A `Deck` overlay sits on top of MapLibre and owns all pointer events. MapLibre renders tiles only (`interactive: false`), while `Deck` drives navigation and drawing. The two stay in sync via `map.jumpTo()` on every view state change. This architecture is required because `EditableGeoJsonLayer` needs direct pointer events on the deck canvas to place vertices on empty map space — `MapboxOverlay` cannot provide this since its canvas uses `pointer-events: none`.
+* **EditableGeoJsonLayer:** Supports `DrawPolygonMode`, `DrawLineStringMode`, `DrawPointMode`, `ModifyMode`, and `ViewMode`. Click to place vertices, double-click to finish a polygon. The layer manages a `FeatureCollection` in React state and auto-switches to Select mode after each feature is drawn.
+* **Webpack Bundler:** deck.gl v9 is distributed as ES modules and requires a build step. The renderer is bundled with webpack (`electron-renderer` target) and the output is loaded by the Electron HTML shell from `dist/renderer.bundle.js`.
 * **Terrain-Aware Draping:** Waypoints and perimeters "clamp" to the `raster-dem` elevation model.
 * **Volumetric Fences:** 3D extrusions for visualizing vertical geofences and "Safe Altitude" corridors.
 
@@ -100,7 +104,7 @@ Bypasses the "JSON bottleneck" by decoding binary streams directly into the appl
 | :--- | :--- |
 | **Robotics** | ROS2, Zenoh, Gazebo Sim, Docker |
 | **Frontend** | React, Electron, Zustand, TypeScript |
-| **Graphics** | Deck.gl, MapLibre (WebGL/WebGPU), Nebula.gl |
+| **Graphics** | Deck.gl, MapLibre (WebGL/WebGPU), @deck.gl-community/editable-layers |
 | **Data** | Protobuf, PMTiles, Uint8Array Streams |
 
 ## 🗺️ Roadmap
@@ -123,14 +127,21 @@ OpenC2 is a research project. We welcome contributions that focus on performance
 
 1.  **Clone the repository:** `git clone https://github.com/EthanMBoos/OpenC2.git`
 2.  **Install dependencies:** `npm install`
-3.  **Launch dev environment:** `npm run dev`
+3.  **Build & launch:** `npm start` (runs webpack then Electron)
+4.  **Watch mode (optional):** Run `npm run watch` in one terminal, then `npx electron .` in another for live rebuilds.
 
-> **Electron**
-> After installing, start the Electron application with:
-> ```sh
-> npm start
-> ```
-> This opens the initial window where the React renderer is mounted. A placeholder message is shown; the map will be added here later.
+> **Build step**
+> The renderer uses ES `import` syntax for deck.gl and editable-layers, which requires a webpack bundle.
+> `npm run build` outputs `dist/renderer.bundle.js`, which the Electron HTML shell loads.
+> In development, `npm run watch` rebuilds automatically on file changes.
+
+> **Drawing on the map**
+> Use the toolbar on the left side of the map:
+> - **Select** — pan/zoom the map
+> - **Polygon / Line / Point** — click to place vertices, double-click to finish
+> - **Modify** — drag vertices of existing features
+>
+> The cursor changes to a crosshair when a drawing mode is active.
 
 > **Map testing**
 > For early development you can point MapLibre at a public style URL such as the OpenFreeMap ’liberty’ style. The renderer already includes a `MapComponent` that loads:
