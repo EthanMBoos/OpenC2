@@ -16,11 +16,21 @@ import {
 
 // ── Drawing mode definitions ──
 const MODES = {
-  view:    { label: '\u{1F446} Select',  mode: ViewMode },
-  modify:  { label: '\u270F\uFE0F Modify',  mode: ModifyMode },
-  polygon: { label: '\u2B21 Polygon', mode: DrawPolygonMode },
-  line:    { label: '\u2571 Line',     mode: DrawLineStringMode },
-  point:   { label: '\u25CF Point',   mode: DrawPointMode }
+  view:       { label: '\u{1F446} Select',       mode: ViewMode },
+  modify:     { label: '\u270F\uFE0F Modify',       mode: ModifyMode },
+  nfz:        { label: '\u26D4 NFZ',             mode: DrawPolygonMode },
+  searchZone: { label: '\u{1F50D} Search Zone',   mode: DrawPolygonMode },
+  route:      { label: '\u2192 Route',            mode: DrawLineStringMode },
+  searchPoint:{ label: '\u{1F4CD} Search Point',  mode: DrawPointMode }
+};
+
+// ── Per-feature-type color palette ──
+const FEATURE_COLORS = {
+  nfz:         { fill: [220, 53, 69, 90],   line: [220, 53, 69, 220]  },  // red
+  searchZone:  { fill: [59, 130, 246, 80],  line: [59, 130, 246, 220] },  // blue
+  route:       { fill: [156, 163, 175, 80], line: [156, 163, 175, 220]},  // gray
+  searchPoint: { fill: [59, 130, 246, 200], line: [59, 130, 246, 255] },  // blue
+  _default:    { fill: [78, 204, 163, 100], line: [78, 204, 163, 220] }   // fallback teal
 };
 
 // Initial view
@@ -163,6 +173,9 @@ function MapComponent() {
     const ModeClass = MODES[activeMode].mode;
     const isDrawing = activeMode !== 'view';
 
+    // Resolve tentative colors from the active drawing mode
+    const tentativeColors = FEATURE_COLORS[activeMode] || FEATURE_COLORS._default;
+
     const editableLayer = new EditableGeoJsonLayer({
       id: 'editable-geojson',
       data: geoJson,
@@ -170,22 +183,44 @@ function MapComponent() {
       selectedFeatureIndexes,
 
       onEdit: ({ updatedData, editType }) => {
-        setGeoJson(updatedData);
-        // After finishing a feature, switch to select mode
+        // Tag newly added features with the current drawing type
         if (editType === 'addFeature') {
+          const lastIdx = updatedData.features.length - 1;
+          updatedData = {
+            ...updatedData,
+            features: updatedData.features.map((f, i) =>
+              i === lastIdx
+                ? { ...f, properties: { ...f.properties, featureType: activeMode } }
+                : f
+            )
+          };
           drawJustFinishedRef.current = true;
+          setGeoJson(updatedData);
           setActiveMode('view');
-          setSelectedFeatureIndexes([updatedData.features.length - 1]);
+          setSelectedFeatureIndexes([lastIdx]);
+        } else {
+          setGeoJson(updatedData);
         }
       },
 
-      // Styling
-      getFillColor: [78, 204, 163, 100],
-      getLineColor: [78, 204, 163, 220],
+      // Per-feature-type styling
+      getFillColor: (f) => {
+        const c = FEATURE_COLORS[f?.properties?.featureType] || FEATURE_COLORS._default;
+        return c.fill;
+      },
+      getLineColor: (f) => {
+        const c = FEATURE_COLORS[f?.properties?.featureType] || FEATURE_COLORS._default;
+        return c.line;
+      },
       getLineWidth: 2,
       getPointRadius: 6,
       pointRadiusMinPixels: 4,
       lineWidthMinPixels: 2,
+
+      // Tentative (in-progress drawing) styling – matches the active mode color
+      getTentativeFillColor: tentativeColors.fill,
+      getTentativeLineColor: tentativeColors.line,
+      getTentativeLineWidth: 2,
 
       // Edit handle styling
       getEditHandlePointColor: [255, 255, 255, 255],
@@ -326,7 +361,7 @@ function MapComponent() {
       React.createElement('div', {
         style: { padding: '6px 12px', color: 'rgba(255,255,255,0.5)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }
       }, 'Draw'),
-      ['polygon', 'line', 'point'].map((key) =>
+      ['nfz', 'searchZone', 'route', 'searchPoint'].map((key) =>
         React.createElement('div', {
           key,
           style: {
