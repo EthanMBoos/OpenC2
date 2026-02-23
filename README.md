@@ -8,7 +8,6 @@ While traditional tools are often too resource-heavy for field use or too rigid 
 
 
 
----
 
 ## 🏗️ System Architecture
 
@@ -63,7 +62,6 @@ flowchart LR
     class Pipeline pipe;
     class UI,Map ui;
 ```
----
 
 ## 🛠️ Technical Pillars
 
@@ -104,8 +102,6 @@ Bypasses the "JSON bottleneck" by decoding binary streams directly into the appl
 | **Frontend** | React, Electron, Zustand, TypeScript |
 | **Graphics** | Deck.gl, MapLibre (WebGL/WebGPU), Nebula.gl |
 | **Data** | Protobuf, PMTiles, Uint8Array Streams |
-
----
 
 ## 🗺️ Roadmap
 
