@@ -6,6 +6,7 @@ const ReactDOM = require('react-dom');
 function MapComponent() {
   const mapContainerRef = React.useRef(null);
   const mapRef = React.useRef(null);
+  const terrainEnabledRef = React.useRef(false);
   const [terrainEnabled, setTerrainEnabled] = React.useState(false);
 
   React.useEffect(() => {
@@ -15,21 +16,73 @@ function MapComponent() {
       container: mapContainerRef.current,
       style: 'https://tiles.openfreemap.org/styles/liberty', // public URL for initial testing
       center: [13.388, 52.517],
-      zoom: 9.5
+      zoom: 9.5,
+      pitch: 0,
+      bearing: 0,
+      maxPitch: 0,             // start in 2D – no pitch allowed
+      dragRotate: false        // we replace with a dampened version below
     });
     mapRef.current = map;
 
+    // ── Dampened right-click drag rotation ──
+    // Lower sensitivity = harder to spin the camera wildly.
+    // Adjust BEARING_SENSITIVITY and PITCH_SENSITIVITY (0-1) to taste.
+    const BEARING_SENSITIVITY = 0.25;
+    const PITCH_SENSITIVITY   = 0.25;
+
+    let isRightDragging = false;
+    let lastX = 0;
+    let lastY = 0;
+    const canvas = map.getCanvas();
+
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 2) {          // right-click
+        isRightDragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+      }
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (!isRightDragging) return;
+      // In 2D mode, block all rotation
+      if (!terrainEnabledRef.current) return;
+
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+
+      map.setBearing(map.getBearing() + dx * BEARING_SENSITIVITY);
+      map.setPitch(
+        Math.max(0, Math.min(75, map.getPitch() - dy * PITCH_SENSITIVITY))
+      );
+
+      lastX = e.clientX;
+      lastY = e.clientY;
+    });
+
+    const stopDrag = (e) => {
+      if (e.button === 2) isRightDragging = false;
+    };
+    canvas.addEventListener('mouseup', stopDrag);
+    canvas.addEventListener('mouseleave', () => { isRightDragging = false; });
+
     // cleanup on unmount
-    return () => map.remove();
+    return () => {
+      canvas.removeEventListener('mouseup', stopDrag);
+      map.remove();
+    };
   }, []);
 
   // Toggle terrain on/off when state changes
   React.useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    terrainEnabledRef.current = terrainEnabled;
 
     function applyTerrain() {
       if (terrainEnabled) {
+        // Switch to 3D: allow pitch & rotation
+        map.setMaxPitch(75);
         // Add Mapterhorn raster-dem source if not already present
         if (!map.getSource('mapterhorn-dem')) {
           map.addSource('mapterhorn-dem', {
@@ -55,8 +108,11 @@ function MapComponent() {
         // Enable 3D terrain
         map.setTerrain({ source: 'mapterhorn-dem', exaggeration: 1.5 });
       } else {
-        // Disable 3D terrain
+        // Switch to 2D: reset camera to flat top-down
         map.setTerrain(null);
+        map.setPitch(0);
+        map.setBearing(0);
+        map.setMaxPitch(0);    // lock out pitch completely in 2D
         // Remove hillshade layer and DEM source
         if (map.getLayer('mapterhorn-hillshade')) {
           map.removeLayer('mapterhorn-hillshade');
@@ -108,7 +164,7 @@ function MapComponent() {
       style: toggleBtnStyle,
       onClick: function () { setTerrainEnabled(!terrainEnabled); },
       title: terrainEnabled ? 'Disable 3D Terrain' : 'Enable 3D Terrain'
-    }, '\u26F0\uFE0F Terrain: ' + (terrainEnabled ? 'ON' : 'OFF'))
+    }, terrainEnabled ? '\uD83C\uDF0D 3D' : '\uD83D\uDDFA\uFE0F 2D')
   );
 }
 
