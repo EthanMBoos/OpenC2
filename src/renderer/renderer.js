@@ -58,6 +58,7 @@ function MapComponent() {
       zoom: INITIAL_VIEW.zoom,
       pitch: 0,
       bearing: 0,
+      maxPitch: 85,             // high ceiling – deck.gl controller enforces the real limit
       interactive: false,       // deck.gl drives all navigation
       attributionControl: true
     });
