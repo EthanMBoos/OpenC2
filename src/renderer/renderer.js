@@ -1,89 +1,169 @@
-// basic React app without JSX so no build step required
-const React = require('react');
-const ReactDOM = require('react-dom');
+// ── deck.gl v9 + editable-layers integrated renderer ──
+import React from 'react';
+import ReactDOM from 'react-dom';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 
-// simple map component using MapLibre GL
+import { Deck } from '@deck.gl/core';
+import {
+  EditableGeoJsonLayer,
+  DrawPolygonMode,
+  DrawPointMode,
+  DrawLineStringMode,
+  ViewMode,
+  ModifyMode
+} from '@deck.gl-community/editable-layers';
+
+// ── Drawing mode definitions ──
+const MODES = {
+  view:    { label: '\u{1F446} Select',  mode: ViewMode },
+  modify:  { label: '\u270F\uFE0F Modify',  mode: ModifyMode },
+  polygon: { label: '\u2B21 Polygon', mode: DrawPolygonMode },
+  line:    { label: '\u2571 Line',     mode: DrawLineStringMode },
+  point:   { label: '\u25CF Point',   mode: DrawPointMode }
+};
+
+// Initial view
+const INITIAL_VIEW = {
+  longitude: 13.388,
+  latitude: 52.517,
+  zoom: 9.5,
+  pitch: 0,
+  bearing: 0
+};
+
 function MapComponent() {
   const mapContainerRef = React.useRef(null);
+  const deckContainerRef = React.useRef(null);
   const mapRef = React.useRef(null);
+  const deckRef = React.useRef(null);
   const terrainEnabledRef = React.useRef(false);
-  const [terrainEnabled, setTerrainEnabled] = React.useState(false);
+  const viewStateRef = React.useRef(INITIAL_VIEW);
 
+  const [terrainEnabled, setTerrainEnabled] = React.useState(false);
+  const [activeMode, setActiveMode] = React.useState('view');
+  const [geoJson, setGeoJson] = React.useState({
+    type: 'FeatureCollection',
+    features: []
+  });
+  const [selectedFeatureIndexes, setSelectedFeatureIndexes] = React.useState([]);
+
+  // ── Initialize map (tiles only) + standalone Deck (interaction + drawing) ──
   React.useEffect(() => {
-    // require so we don't need a bundler; it returns the Map class
-    const maplibregl = require('maplibre-gl');
+    // MapLibre renders tiles but does NOT handle user interaction
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
-      style: 'https://tiles.openfreemap.org/styles/liberty', // public URL for initial testing
-      center: [13.388, 52.517],
-      zoom: 9.5,
+      style: 'https://tiles.openfreemap.org/styles/liberty',
+      center: [INITIAL_VIEW.longitude, INITIAL_VIEW.latitude],
+      zoom: INITIAL_VIEW.zoom,
       pitch: 0,
       bearing: 0,
-      maxPitch: 0,             // start in 2D – no pitch allowed
-      dragRotate: false        // we replace with a dampened version below
+      interactive: false,       // deck.gl drives all navigation
+      attributionControl: true
     });
     mapRef.current = map;
 
-    // ── Dampened right-click drag rotation ──
-    // Lower sensitivity = harder to spin the camera wildly.
-    // Adjust BEARING_SENSITIVITY and PITCH_SENSITIVITY (0-1) to taste.
-    const BEARING_SENSITIVITY = 0.25;
-    const PITCH_SENSITIVITY   = 0.25;
-
-    let isRightDragging = false;
-    let lastX = 0;
-    let lastY = 0;
-    const canvas = map.getCanvas();
-
-    canvas.addEventListener('mousedown', (e) => {
-      if (e.button === 2) {          // right-click
-        isRightDragging = true;
-        lastX = e.clientX;
-        lastY = e.clientY;
-      }
+    // Standalone Deck instance on top of the map – receives ALL pointer events
+    const deck = new Deck({
+      parent: deckContainerRef.current,
+      viewState: INITIAL_VIEW,
+      controller: {
+        doubleClickZoom: false,     // avoid conflict with double-click to finish polygon
+        dragRotate: false,          // we enable this dynamically when terrain is on
+        touchRotate: false
+      },
+      layers: [],
+      onViewStateChange: ({ viewState }) => {
+        viewStateRef.current = viewState;
+        deck.setProps({ viewState });
+        // Sync MapLibre to match deck.gl's view
+        map.jumpTo({
+          center: [viewState.longitude, viewState.latitude],
+          zoom: viewState.zoom,
+          bearing: viewState.bearing,
+          pitch: viewState.pitch
+        });
+      },
+      getCursor: ({ isDragging }) => isDragging ? 'grabbing' : 'grab',
+      style: { position: 'absolute', top: 0, left: 0, zIndex: 1 },
+      useDevicePixels: true
     });
+    deckRef.current = deck;
 
-    canvas.addEventListener('mousemove', (e) => {
-      if (!isRightDragging) return;
-      // In 2D mode, block all rotation
-      if (!terrainEnabledRef.current) return;
-
-      const dx = e.clientX - lastX;
-      const dy = e.clientY - lastY;
-
-      map.setBearing(map.getBearing() + dx * BEARING_SENSITIVITY);
-      map.setPitch(
-        Math.max(0, Math.min(75, map.getPitch() - dy * PITCH_SENSITIVITY))
-      );
-
-      lastX = e.clientX;
-      lastY = e.clientY;
-    });
-
-    const stopDrag = (e) => {
-      if (e.button === 2) isRightDragging = false;
-    };
-    canvas.addEventListener('mouseup', stopDrag);
-    canvas.addEventListener('mouseleave', () => { isRightDragging = false; });
-
-    // cleanup on unmount
     return () => {
-      canvas.removeEventListener('mouseup', stopDrag);
+      deck.finalize();
       map.remove();
     };
   }, []);
 
-  // Toggle terrain on/off when state changes
+  // ── Update deck.gl layers whenever drawing state changes ──
+  React.useEffect(() => {
+    const deck = deckRef.current;
+    if (!deck) return;
+
+    const ModeClass = MODES[activeMode].mode;
+    const isDrawing = activeMode !== 'view';
+
+    const editableLayer = new EditableGeoJsonLayer({
+      id: 'editable-geojson',
+      data: geoJson,
+      mode: ModeClass,
+      selectedFeatureIndexes,
+
+      onEdit: ({ updatedData, editType }) => {
+        setGeoJson(updatedData);
+        // After finishing a feature, switch to select mode
+        if (editType === 'addFeature') {
+          setActiveMode('view');
+          setSelectedFeatureIndexes([updatedData.features.length - 1]);
+        }
+      },
+
+      // Styling
+      getFillColor: [78, 204, 163, 100],
+      getLineColor: [78, 204, 163, 220],
+      getLineWidth: 2,
+      getPointRadius: 6,
+      pointRadiusMinPixels: 4,
+      lineWidthMinPixels: 2,
+
+      // Edit handle styling
+      getEditHandlePointColor: [255, 255, 255, 255],
+      getEditHandlePointRadius: 5,
+      editHandlePointRadiusMinPixels: 4,
+
+      pickable: true,
+      autoHighlight: true
+    });
+
+    // Update cursor based on mode
+    deck.setProps({
+      layers: [editableLayer],
+      getCursor: isDrawing
+        ? () => 'crosshair'
+        : ({ isDragging }) => isDragging ? 'grabbing' : 'grab'
+    });
+  }, [geoJson, activeMode, selectedFeatureIndexes]);
+
+  // ── Toggle terrain on/off ──
   React.useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
+    const deck = deckRef.current;
+    if (!map || !deck) return;
     terrainEnabledRef.current = terrainEnabled;
+
+    // Enable/disable right-click rotation on deck controller
+    deck.setProps({
+      controller: {
+        doubleClickZoom: false,
+        dragRotate: terrainEnabled,
+        touchRotate: terrainEnabled,
+        maxPitch: terrainEnabled ? 75 : 0
+      }
+    });
 
     function applyTerrain() {
       if (terrainEnabled) {
-        // Switch to 3D: allow pitch & rotation
-        map.setMaxPitch(75);
-        // Add Mapterhorn raster-dem source if not already present
         if (!map.getSource('mapterhorn-dem')) {
           map.addSource('mapterhorn-dem', {
             type: 'raster-dem',
@@ -92,7 +172,6 @@ function MapComponent() {
             tileSize: 512
           });
         }
-        // Add hillshade layer if not already present
         if (!map.getLayer('mapterhorn-hillshade')) {
           map.addLayer({
             id: 'mapterhorn-hillshade',
@@ -105,15 +184,14 @@ function MapComponent() {
             }
           });
         }
-        // Enable 3D terrain
         map.setTerrain({ source: 'mapterhorn-dem', exaggeration: 1.5 });
       } else {
-        // Switch to 2D: reset camera to flat top-down
         map.setTerrain(null);
-        map.setPitch(0);
-        map.setBearing(0);
-        map.setMaxPitch(0);    // lock out pitch completely in 2D
-        // Remove hillshade layer and DEM source
+        // Reset view to flat
+        const vs = { ...viewStateRef.current, pitch: 0, bearing: 0 };
+        viewStateRef.current = vs;
+        deck.setProps({ viewState: vs });
+        map.jumpTo({ center: [vs.longitude, vs.latitude], zoom: vs.zoom, bearing: 0, pitch: 0 });
         if (map.getLayer('mapterhorn-hillshade')) {
           map.removeLayer('mapterhorn-hillshade');
         }
@@ -123,7 +201,6 @@ function MapComponent() {
       }
     }
 
-    // If the map style is already loaded apply immediately, otherwise wait
     if (map.isStyleLoaded()) {
       applyTerrain();
     } else {
@@ -131,11 +208,12 @@ function MapComponent() {
     }
   }, [terrainEnabled]);
 
+  // ── Styles ──
   const toggleBtnStyle = {
     position: 'absolute',
     top: '10px',
     right: '10px',
-    zIndex: 1,
+    zIndex: 2,
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
@@ -152,14 +230,61 @@ function MapComponent() {
     transition: 'background 0.2s, border 0.2s'
   };
 
+  const toolbarStyle = {
+    position: 'absolute',
+    top: '10px',
+    left: '10px',
+    zIndex: 2,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px'
+  };
+
+  const toolBtnStyle = (key) => ({
+    background: activeMode === key ? 'rgba(78, 204, 163, 0.9)' : 'rgba(26, 26, 46, 0.85)',
+    color: '#fff',
+    border: activeMode === key ? '1px solid #4ecca3' : '1px solid rgba(255,255,255,0.25)',
+    borderRadius: '6px',
+    padding: '6px 12px',
+    cursor: 'pointer',
+    fontSize: '13px',
+    fontFamily: 'sans-serif',
+    fontWeight: 500,
+    backdropFilter: 'blur(4px)',
+    transition: 'background 0.2s, border 0.2s',
+    textAlign: 'left'
+  });
+
   return React.createElement('div', {
     style: { position: 'relative', width: '100%', height: '600px', marginTop: '1rem' }
   },
+    // MapLibre container (tiles only)
     React.createElement('div', {
       id: 'map',
       ref: mapContainerRef,
-      style: { width: '100%', height: '100%' }
+      style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }
     }),
+    // Deck.gl container (transparent overlay – handles interaction + drawing)
+    React.createElement('div', {
+      ref: deckContainerRef,
+      style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 1 }
+    }),
+    // Drawing toolbar
+    React.createElement('div', { style: toolbarStyle },
+      Object.keys(MODES).map((key) =>
+        React.createElement('button', {
+          key,
+          style: toolBtnStyle(key),
+          onClick: () => {
+            setActiveMode(key);
+            if (key !== 'modify' && key !== 'view') {
+              setSelectedFeatureIndexes([]);
+            }
+          }
+        }, MODES[key].label)
+      )
+    ),
+    // Terrain toggle
     React.createElement('button', {
       style: toggleBtnStyle,
       onClick: function () { setTerrainEnabled(!terrainEnabled); },

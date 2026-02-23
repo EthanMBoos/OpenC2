@@ -4,20 +4,28 @@
   "description": "Electron + React boilerplate for OpenC2",
   "main": "src/main/main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron .",
+    "build": "webpack --config webpack.renderer.js",
+    "watch": "webpack --config webpack.renderer.js --watch",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron .",
     "postinstall": "electron-builder install-app-deps"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@deck.gl-community/editable-layers": "^9.2.5",
+    "@deck.gl/core": "^9.2.9",
     "maplibre-gl": "^5.19.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "css-loader": "^7.1.4",
     "electron": "^26.0.0",
-    "electron-builder": "^24.0.0"
+    "electron-builder": "^24.0.0",
+    "style-loader": "^4.0.0",
+    "webpack": "^5.105.2",
+    "webpack-cli": "^6.0.1"
   }
 }
