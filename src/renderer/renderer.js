@@ -56,7 +56,6 @@ const SATELLITE_STYLE = {
   }]
 };
 
-// Initial view
 const INITIAL_VIEW = {
   longitude: -84.388,
   latitude: 33.749,
@@ -71,7 +70,6 @@ function MapComponent() {
   const deckOverlayRef = React.useRef(null);
   const terrainEnabledRef = React.useRef(false);
   const drawJustFinishedRef = React.useRef(false);
-  const pendingClickRef = React.useRef(null);
   const satelliteInitRef = React.useRef(true);
 
   const [terrainEnabled, setTerrainEnabled] = React.useState(false);
@@ -84,9 +82,8 @@ function MapComponent() {
   const [selectedFeatureIndexes, setSelectedFeatureIndexes] = React.useState([]);
   const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0, lngLat: null });
 
-  // ── Initialize MapLibre + DeckGL MapboxOverlay ──
+  // ── 1. Initialize Interleaved MapLibre + Deck.gl ──
   React.useEffect(() => {
-    // 1. MapLibre natively drives all navigation
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
       style: STREET_STYLE,
@@ -99,17 +96,18 @@ function MapComponent() {
       attributionControl: true
     });
     
-    // Disable native double-click zoom so it doesn't conflict with drawing/menus
+    // Disable native double-click zoom to prevent conflicts with drawing/menus
     map.doubleClickZoom.disable();
     mapRef.current = map;
 
-    // 2. Instantiate the interleaved DeckGL overlay
+    // Use MapboxOverlay to share the WebGL context. 
+    // WHY: This eliminates Electron compositing bugs (the gray overlay) 
+    // and guarantees perfect 3D depth sorting.
     const deckOverlay = new MapboxOverlay({
       interleaved: true,
       layers: []
     });
     
-    // 3. Inject DeckGL directly into MapLibre's WebGL context
     map.addControl(deckOverlay);
     deckOverlayRef.current = deckOverlay;
 
@@ -120,7 +118,33 @@ function MapComponent() {
     };
   }, []);
 
-  // ── Double-click mission editor menu on the map (only in view/modify mode) ──
+  // ── 2. Manage MapLibre Interactions & Cursor Lock ──
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const canvas = map.getCanvas();
+    const isDrawingOrEditing = activeMode !== 'view';
+
+    if (isDrawingOrEditing) {
+      // WHY: MapLibre natively steals pan/drag events. We MUST disable it 
+      // when drawing so @deck.gl-community/editable-layers can capture mouse drags.
+      map.dragPan.disable();
+      
+      // WHY: MapLibre constantly resets the canvas cursor back to 'grab' on mousemove.
+      // We use !important to strictly override the browser engine and force the crosshair.
+      canvas.style.setProperty(
+        'cursor', 
+        activeMode === 'modify' ? 'grab' : 'crosshair', 
+        'important'
+      );
+    } else {
+      map.dragPan.enable();
+      canvas.style.cursor = ''; 
+    }
+  }, [activeMode]);
+
+  // ── 3. Handle Complex Events (Double Clicks & Keydowns) ──
   React.useEffect(() => {
     const container = mapContainerRef.current;
     const map = mapRef.current;
@@ -128,21 +152,45 @@ function MapComponent() {
 
     const handleDblClick = (e) => {
       const mode = activeMode;
-      if (mode !== 'view' && mode !== 'modify') return;
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      // --- SCENARIO A: User is actively drawing a shape ---
+      if (mode !== 'view' && mode !== 'modify') {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const overlay = deckOverlayRef.current;
+        if (overlay && overlay._deck) {
+          // WHY: MapboxOverlay intentionally swallows dblclicks. EditableGeoJsonLayer 
+          // never knows the user tried to finish the line/polygon. We bypass the overlay 
+          // and forcefully inject a synthetic dblclick directly into Deck.gl's private event bus.
+          overlay._deck._onEvent({
+            type: 'dblclick',
+            offsetCenter: { x, y },
+            srcEvent: e
+          });
+
+          // Bulletproof fallback for specific DrawLineStringMode bugs
+          overlay._deck._onEvent({
+            type: 'keyup',
+            key: 'Enter',
+            srcEvent: e
+          });
+        }
+        return; // Prevent the menu from opening
+      }
       
+      // --- SCENARIO B: User is in View/Modify mode ---
       if (drawJustFinishedRef.current) {
         drawJustFinishedRef.current = false;
         return;
       }
 
-      // Calculate relative x/y coordinates from the DOM node
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-
       const overlay = deckOverlayRef.current;
       if (overlay) {
-        // Pick object using the overlay directly
+        // Check if user double-clicked an existing shape to modify it
         const picked = overlay.pickObject({ x, y });
         if (picked && picked.index != null && picked.index >= 0) {
           setSelectedFeatureIndexes([picked.index]);
@@ -151,18 +199,11 @@ function MapComponent() {
         }
       }
 
-      // Unproject pixel coordinates back to Lng/Lat for the new feature
+      // User double-clicked empty space: Open the mission menu
       const lngLat = map.unproject([x, y]);
-
       e.preventDefault();
       e.stopPropagation();
-      
-      setMissionMenu({ 
-        visible: true, 
-        x: e.clientX, 
-        y: e.clientY, 
-        lngLat: [lngLat.lng, lngLat.lat] 
-      });
+      setMissionMenu({ visible: true, x: e.clientX, y: e.clientY, lngLat: [lngLat.lng, lngLat.lat] });
     };
 
     const handleClick = () => {
@@ -186,7 +227,8 @@ function MapComponent() {
       }
     };
 
-    // Bind double-click directly to the native DOM element to avoid canvas event swallowing
+    // WHY: We bind to the native DOM element to ensure we catch the double-click 
+    // before the MapLibre canvas or WebGL context has a chance to call stopPropagation()
     container.addEventListener('dblclick', handleDblClick);
     window.addEventListener('click', handleClick);
     window.addEventListener('keydown', handleKeyDown);
@@ -198,14 +240,12 @@ function MapComponent() {
     };
   }, [activeMode, selectedFeatureIndexes]);
 
-  // ── Update deck.gl layers whenever drawing state changes ──
+  // ── 4. Render Deck.gl Layers ──
   React.useEffect(() => {
     const overlay = deckOverlayRef.current;
-    const map = mapRef.current;
-    if (!overlay || !map) return;
+    if (!overlay) return;
 
     const ModeClass = MODES[activeMode].mode;
-    const isDrawing = activeMode !== 'view';
     const tentativeColors = FEATURE_COLORS[activeMode] || FEATURE_COLORS._default;
 
     const editableLayer = new EditableGeoJsonLayer({
@@ -253,38 +293,16 @@ function MapComponent() {
       autoHighlight: false
     });
 
-    // Pass layers directly to the overlay
     overlay.setProps({
-      layers: [editableLayer]
+      layers: [editableLayer],
+      // WHY: Sync internal deck.gl cursor state with our active mode
+      getCursor: () => (activeMode !== 'view' ? (activeMode === 'modify' ? 'grab' : 'crosshair') : 'auto')
     });
-
-    // Manage cursor directly on the map canvas
-    map.getCanvas().style.cursor = isDrawing ? 'crosshair' : (activeMode === 'modify' ? 'grab' : '');
-
-    // Simulate pending click for starting a drawing right at the double-click point
-    if (pendingClickRef.current && activeMode !== 'view' && activeMode !== 'modify') {
-      const pending = pendingClickRef.current;
-      pendingClickRef.current = null;
-      setTimeout(() => {
-        const canvas = map.getCanvas();
-        if (!canvas) return;
-        const opts = {
-          clientX: pending.screenX,
-          clientY: pending.screenY,
-          bubbles: true,
-          cancelable: true,
-          pointerId: 1,
-          pointerType: 'mouse',
-          button: 0,
-          buttons: 1
-        };
-        canvas.dispatchEvent(new PointerEvent('pointerdown', opts));
-        canvas.dispatchEvent(new PointerEvent('pointerup', { ...opts, buttons: 0 }));
-      }, 80);
-    }
   }, [geoJson, activeMode, selectedFeatureIndexes]);
 
-  // ── Terrain helpers ──
+  // ── 5. Native MapLibre Terrain Helpers ──
+  // WHY: We use MapLibre's native terrain instead of deck.gl's TerrainLayer 
+  // because it's significantly faster and doesn't cause transparent compositing bugs.
   function applyTerrain(map) {
     if (!map.getSource('mapterhorn-dem')) {
       map.addSource('mapterhorn-dem', {
@@ -311,14 +329,10 @@ function MapComponent() {
 
   function removeTerrain(map) {
     map.setTerrain(null);
-    map.easeTo({ pitch: 0, bearing: 0, duration: 600 }); // Smooth fly back to 2D
+    map.easeTo({ pitch: 0, bearing: 0, duration: 600 }); 
     
-    if (map.getLayer('mapterhorn-hillshade')) {
-      map.removeLayer('mapterhorn-hillshade');
-    }
-    if (map.getSource('mapterhorn-dem')) {
-      map.removeSource('mapterhorn-dem');
-    }
+    if (map.getLayer('mapterhorn-hillshade')) map.removeLayer('mapterhorn-hillshade');
+    if (map.getSource('mapterhorn-dem')) map.removeSource('mapterhorn-dem');
   }
 
   // ── Toggle terrain on/off ──
@@ -327,7 +341,6 @@ function MapComponent() {
     if (!map) return;
     terrainEnabledRef.current = terrainEnabled;
 
-    // Toggle maplibre's native rotation controls
     if (terrainEnabled) {
       map.dragRotate.enable();
       map.touchZoomRotate.enableRotation();
@@ -386,7 +399,7 @@ function MapComponent() {
   return React.createElement('div', {
     style: { position: 'relative', width: '100%', height: '600px', marginTop: '1rem' }
   },
-    // The unified Map container
+    // The unified Map container (Only one canvas!)
     React.createElement('div', {
       id: 'map',
       ref: mapContainerRef,
@@ -431,8 +444,6 @@ function MapComponent() {
           onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
           onClick: () => {
             const clickLngLat = missionMenu.lngLat;
-            const clickScreenX = missionMenu.x;
-            const clickScreenY = missionMenu.y;
             setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null });
 
             if (key === 'searchPoint' && clickLngLat) {
@@ -448,9 +459,6 @@ function MapComponent() {
               setSelectedFeatureIndexes([geoJson.features.length]);
               setActiveMode('view');
             } else {
-              if (clickLngLat) {
-                pendingClickRef.current = { screenX: clickScreenX, screenY: clickScreenY };
-              }
               setActiveMode(key);
               setSelectedFeatureIndexes([]);
             }
