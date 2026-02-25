@@ -1,10 +1,10 @@
-// ── deck.gl v9 + editable-layers integrated renderer ──
+// ── deck.gl v9 + maplibre interleaved renderer ──
 import React from 'react';
 import ReactDOM from 'react-dom';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-import { Deck } from '@deck.gl/core';
+import { MapboxOverlay } from '@deck.gl/mapbox';
 import {
   EditableGeoJsonLayer,
   DrawPolygonMode,
@@ -27,12 +27,12 @@ const MODES = {
 
 // ── Per-feature-type color palette ──
 const FEATURE_COLORS = {
-  nfz:         { fill: [220, 53, 69, 90],   line: [220, 53, 69, 220]  },  // red
-  searchZone:  { fill: [59, 130, 246, 80],  line: [59, 130, 246, 220] },  // blue
-  route:       { fill: [156, 163, 175, 80], line: [156, 163, 175, 220]},  // gray
-  searchPoint: { fill: [59, 130, 246, 200], line: [59, 130, 246, 255] },  // blue
-  geofence:    { fill: [0, 0, 0, 0],        line: [255, 165, 0, 240]  },  // orange outline only
-  _default:    { fill: [78, 204, 163, 100], line: [78, 204, 163, 220] }   // fallback teal
+  nfz:         { fill: [220, 53, 69, 90],   line: [220, 53, 69, 220]  },
+  searchZone:  { fill: [59, 130, 246, 80],  line: [59, 130, 246, 220] },
+  route:       { fill: [156, 163, 175, 80], line: [156, 163, 175, 220]},
+  searchPoint: { fill: [59, 130, 246, 200], line: [59, 130, 246, 255] },
+  geofence:    { fill: [0, 0, 0, 0],        line: [255, 165, 0, 240]  },
+  _default:    { fill: [78, 204, 163, 100], line: [78, 204, 163, 220] }
 };
 
 // ── Map styles ──
@@ -67,11 +67,9 @@ const INITIAL_VIEW = {
 
 function MapComponent() {
   const mapContainerRef = React.useRef(null);
-  const deckContainerRef = React.useRef(null);
   const mapRef = React.useRef(null);
-  const deckRef = React.useRef(null);
+  const deckOverlayRef = React.useRef(null);
   const terrainEnabledRef = React.useRef(false);
-  const viewStateRef = React.useRef(INITIAL_VIEW);
   const drawJustFinishedRef = React.useRef(false);
   const pendingClickRef = React.useRef(null);
   const satelliteInitRef = React.useRef(true);
@@ -84,77 +82,68 @@ function MapComponent() {
     features: []
   });
   const [selectedFeatureIndexes, setSelectedFeatureIndexes] = React.useState([]);
-  const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0 });
+  const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0, lngLat: null });
 
-  // ── Initialize map (tiles only) + standalone Deck (interaction + drawing) ──
+  // ── Initialize MapLibre + DeckGL MapboxOverlay ──
   React.useEffect(() => {
-    // MapLibre renders tiles but does NOT handle user interaction
+    // 1. MapLibre natively drives all navigation
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
       style: STREET_STYLE,
       center: [INITIAL_VIEW.longitude, INITIAL_VIEW.latitude],
       zoom: INITIAL_VIEW.zoom,
-      pitch: 0,
-      bearing: 0,
-      maxPitch: 85,             // high ceiling – deck.gl controller enforces the real limit
-      interactive: false,       // deck.gl drives all navigation
+      pitch: INITIAL_VIEW.pitch,
+      bearing: INITIAL_VIEW.bearing,
+      maxPitch: 85,
+      interactive: true,
       attributionControl: true
     });
+    
+    // Disable native double-click zoom so it doesn't conflict with drawing/menus
+    map.doubleClickZoom.disable();
     mapRef.current = map;
 
-    // Standalone Deck instance on top of the map – receives ALL pointer events
-    const deck = new Deck({
-      parent: deckContainerRef.current,
-      viewState: INITIAL_VIEW,
-      controller: {
-        doubleClickZoom: false,     // avoid conflict with double-click to finish polygon
-        dragRotate: false,          // we enable this dynamically when terrain is on
-        touchRotate: false
-      },
-      layers: [],
-      onViewStateChange: ({ viewState }) => {
-        viewStateRef.current = viewState;
-        deck.setProps({ viewState });
-        // Sync MapLibre to match deck.gl's view
-        map.jumpTo({
-          center: [viewState.longitude, viewState.latitude],
-          zoom: viewState.zoom,
-          bearing: viewState.bearing,
-          pitch: viewState.pitch
-        });
-      },
-      getCursor: ({ isDragging }) => isDragging ? 'grabbing' : 'grab',
-      style: { position: 'absolute', top: 0, left: 0, zIndex: 1 },
-      useDevicePixels: true
+    // 2. Instantiate the interleaved DeckGL overlay
+    const deckOverlay = new MapboxOverlay({
+      interleaved: true,
+      layers: []
     });
-    deckRef.current = deck;
+    
+    // 3. Inject DeckGL directly into MapLibre's WebGL context
+    map.addControl(deckOverlay);
+    deckOverlayRef.current = deckOverlay;
 
     return () => {
-      deck.finalize();
+      map.removeControl(deckOverlay);
+      deckOverlay.finalize();
       map.remove();
     };
   }, []);
 
   // ── Double-click mission editor menu on the map (only in view/modify mode) ──
   React.useEffect(() => {
-    const container = deckContainerRef.current;
-    if (!container) return;
+    const container = mapContainerRef.current;
+    const map = mapRef.current;
+    if (!container || !map) return;
 
     const handleDblClick = (e) => {
-      // Only show menu when not actively drawing (avoid conflict with finish-drawing double-click)
       const mode = activeMode;
       if (mode !== 'view' && mode !== 'modify') return;
-      // Suppress menu if a drawing just finished on this same double-click
+      
       if (drawJustFinishedRef.current) {
         drawJustFinishedRef.current = false;
         return;
       }
 
-      // Check if a feature was double-clicked – if so, enter edit mode on it
-      const deck = deckRef.current;
-      if (deck) {
-        const rect = deckContainerRef.current.getBoundingClientRect();
-        const picked = deck.pickObject({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      // Calculate relative x/y coordinates from the DOM node
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      const overlay = deckOverlayRef.current;
+      if (overlay) {
+        // Pick object using the overlay directly
+        const picked = overlay.pickObject({ x, y });
         if (picked && picked.index != null && picked.index >= 0) {
           setSelectedFeatureIndexes([picked.index]);
           setActiveMode('modify');
@@ -162,14 +151,18 @@ function MapComponent() {
         }
       }
 
-      // Compute lng/lat at the double-click location for later use
-      const map = mapRef.current;
-      const containerRect = deckContainerRef.current.getBoundingClientRect();
-      const lngLat = map.unproject([e.clientX - containerRect.left, e.clientY - containerRect.top]);
+      // Unproject pixel coordinates back to Lng/Lat for the new feature
+      const lngLat = map.unproject([x, y]);
 
       e.preventDefault();
       e.stopPropagation();
-      setMissionMenu({ visible: true, x: e.clientX, y: e.clientY, lngLat: [lngLat.lng, lngLat.lat] });
+      
+      setMissionMenu({ 
+        visible: true, 
+        x: e.clientX, 
+        y: e.clientY, 
+        lngLat: [lngLat.lng, lngLat.lat] 
+      });
     };
 
     const handleClick = () => {
@@ -179,7 +172,6 @@ function MapComponent() {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         setMissionMenu((prev) => ({ ...prev, visible: false }));
-        // Exit any drawing/modify mode back to view
         setActiveMode((prev) => (prev !== 'view' ? 'view' : prev));
         setSelectedFeatureIndexes([]);
       }
@@ -194,6 +186,7 @@ function MapComponent() {
       }
     };
 
+    // Bind double-click directly to the native DOM element to avoid canvas event swallowing
     container.addEventListener('dblclick', handleDblClick);
     window.addEventListener('click', handleClick);
     window.addEventListener('keydown', handleKeyDown);
@@ -207,13 +200,12 @@ function MapComponent() {
 
   // ── Update deck.gl layers whenever drawing state changes ──
   React.useEffect(() => {
-    const deck = deckRef.current;
-    if (!deck) return;
+    const overlay = deckOverlayRef.current;
+    const map = mapRef.current;
+    if (!overlay || !map) return;
 
     const ModeClass = MODES[activeMode].mode;
     const isDrawing = activeMode !== 'view';
-
-    // Resolve tentative colors from the active drawing mode
     const tentativeColors = FEATURE_COLORS[activeMode] || FEATURE_COLORS._default;
 
     const editableLayer = new EditableGeoJsonLayer({
@@ -223,7 +215,6 @@ function MapComponent() {
       selectedFeatureIndexes,
 
       onEdit: ({ updatedData, editType }) => {
-        // Tag newly added features with the current drawing type
         if (editType === 'addFeature') {
           const lastIdx = updatedData.features.length - 1;
           updatedData = {
@@ -243,26 +234,17 @@ function MapComponent() {
         }
       },
 
-      // Per-feature-type styling
-      getFillColor: (f) => {
-        const c = FEATURE_COLORS[f?.properties?.featureType] || FEATURE_COLORS._default;
-        return c.fill;
-      },
-      getLineColor: (f) => {
-        const c = FEATURE_COLORS[f?.properties?.featureType] || FEATURE_COLORS._default;
-        return c.line;
-      },
+      getFillColor: (f) => (FEATURE_COLORS[f?.properties?.featureType] || FEATURE_COLORS._default).fill,
+      getLineColor: (f) => (FEATURE_COLORS[f?.properties?.featureType] || FEATURE_COLORS._default).line,
       getLineWidth: 2,
       getPointRadius: 6,
       pointRadiusMinPixels: 4,
       lineWidthMinPixels: 2,
 
-      // Tentative (in-progress drawing) styling – matches the active mode color
       getTentativeFillColor: tentativeColors.fill,
       getTentativeLineColor: tentativeColors.line,
       getTentativeLineWidth: 2,
 
-      // Edit handle styling
       getEditHandlePointColor: [255, 255, 255, 255],
       getEditHandlePointRadius: 5,
       editHandlePointRadiusMinPixels: 4,
@@ -271,21 +253,20 @@ function MapComponent() {
       autoHighlight: false
     });
 
-    // Update cursor based on mode
-    deck.setProps({
-      layers: [editableLayer],
-      getCursor: isDrawing
-        ? () => 'crosshair'
-        : ({ isDragging }) => isDragging ? 'grabbing' : 'grab'
+    // Pass layers directly to the overlay
+    overlay.setProps({
+      layers: [editableLayer]
     });
 
-    // If there's a pending first-click from the mission editor menu, simulate it
+    // Manage cursor directly on the map canvas
+    map.getCanvas().style.cursor = isDrawing ? 'crosshair' : (activeMode === 'modify' ? 'grab' : '');
+
+    // Simulate pending click for starting a drawing right at the double-click point
     if (pendingClickRef.current && activeMode !== 'view' && activeMode !== 'modify') {
       const pending = pendingClickRef.current;
       pendingClickRef.current = null;
-      // Wait for deck.gl to finish processing the new layer/mode before dispatching
       setTimeout(() => {
-        const canvas = deckContainerRef.current?.querySelector('canvas');
+        const canvas = map.getCanvas();
         if (!canvas) return;
         const opts = {
           clientX: pending.screenX,
@@ -303,7 +284,7 @@ function MapComponent() {
     }
   }, [geoJson, activeMode, selectedFeatureIndexes]);
 
-  // ── Terrain helpers to avoid code duplication ──
+  // ── Terrain helpers ──
   function applyTerrain(map) {
     if (!map.getSource('mapterhorn-dem')) {
       map.addSource('mapterhorn-dem', {
@@ -328,13 +309,10 @@ function MapComponent() {
     map.setTerrain({ source: 'mapterhorn-dem', exaggeration: 1.5 });
   }
 
-  function removeTerrain(map, deck) {
+  function removeTerrain(map) {
     map.setTerrain(null);
-    // Reset view to flat
-    const vs = { ...viewStateRef.current, pitch: 0, bearing: 0 };
-    viewStateRef.current = vs;
-    if (deck) deck.setProps({ viewState: vs });
-    map.jumpTo({ center: [vs.longitude, vs.latitude], zoom: vs.zoom, bearing: 0, pitch: 0 });
+    map.easeTo({ pitch: 0, bearing: 0, duration: 600 }); // Smooth fly back to 2D
+    
     if (map.getLayer('mapterhorn-hillshade')) {
       map.removeLayer('mapterhorn-hillshade');
     }
@@ -346,40 +324,31 @@ function MapComponent() {
   // ── Toggle terrain on/off ──
   React.useEffect(() => {
     const map = mapRef.current;
-    const deck = deckRef.current;
-    if (!map || !deck) return;
+    if (!map) return;
     terrainEnabledRef.current = terrainEnabled;
 
-    // Enable/disable right-click rotation on deck controller
-    deck.setProps({
-      controller: {
-        doubleClickZoom: false,
-        dragRotate: terrainEnabled,
-        touchRotate: terrainEnabled,
-        maxPitch: terrainEnabled ? 75 : 0
-      }
-    });
+    // Toggle maplibre's native rotation controls
+    if (terrainEnabled) {
+      map.dragRotate.enable();
+      map.touchZoomRotate.enableRotation();
+    } else {
+      map.dragRotate.disable();
+      map.touchZoomRotate.disableRotation();
+    }
 
     if (map.isStyleLoaded()) {
-      if (terrainEnabled) {
-        applyTerrain(map);
-      } else {
-        removeTerrain(map, deck);
-      }
+      if (terrainEnabled) applyTerrain(map);
+      else removeTerrain(map);
     } else {
       map.once('style.load', () => {
-        if (terrainEnabled) {
-          applyTerrain(map);
-        } else {
-          removeTerrain(map, deck);
-        }
+        if (terrainEnabled) applyTerrain(map);
+        else removeTerrain(map);
       });
     }
   }, [terrainEnabled]);
 
   // ── Toggle satellite / street view ──
   React.useEffect(() => {
-    // Skip the initial render – the map constructor already set the street style
     if (satelliteInitRef.current) {
       satelliteInitRef.current = false;
       return;
@@ -390,47 +359,20 @@ function MapComponent() {
     const style = satelliteEnabled ? SATELLITE_STYLE : STREET_STYLE;
     map.setStyle(style);
 
-    // After the new style loads, re-apply terrain if it was enabled
     map.once('style.load', () => {
-      if (terrainEnabledRef.current) {
-        applyTerrain(map);
-      }
+      if (terrainEnabledRef.current) applyTerrain(map);
     });
   }, [satelliteEnabled]);
 
   // ── Styles ──
-  const toggleBtnStyle = {
+  const btnBaseStyle = {
     position: 'absolute',
-    top: '10px',
     right: '10px',
     zIndex: 2,
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    background: terrainEnabled ? 'rgba(78, 204, 163, 0.9)' : 'rgba(26, 26, 46, 0.85)',
     color: '#fff',
-    border: terrainEnabled ? '1px solid #4ecca3' : '1px solid rgba(255,255,255,0.25)',
-    borderRadius: '6px',
-    padding: '6px 12px',
-    cursor: 'pointer',
-    fontSize: '13px',
-    fontFamily: 'sans-serif',
-    fontWeight: 500,
-    backdropFilter: 'blur(4px)',
-    transition: 'background 0.2s, border 0.2s'
-  };
-
-  const satelliteBtnStyle = {
-    position: 'absolute',
-    top: '50px',
-    right: '10px',
-    zIndex: 2,
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    background: satelliteEnabled ? 'rgba(59, 130, 246, 0.9)' : 'rgba(26, 26, 46, 0.85)',
-    color: '#fff',
-    border: satelliteEnabled ? '1px solid #3b82f6' : '1px solid rgba(255,255,255,0.25)',
     borderRadius: '6px',
     padding: '6px 12px',
     cursor: 'pointer',
@@ -444,17 +386,13 @@ function MapComponent() {
   return React.createElement('div', {
     style: { position: 'relative', width: '100%', height: '600px', marginTop: '1rem' }
   },
-    // MapLibre container (tiles only)
+    // The unified Map container
     React.createElement('div', {
       id: 'map',
       ref: mapContainerRef,
       style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }
     }),
-    // Deck.gl container (transparent overlay – handles interaction + drawing)
-    React.createElement('div', {
-      ref: deckContainerRef,
-      style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 1 }
-    }),
+    
     // Mission editor menu
     missionMenu.visible && React.createElement('div', {
       style: {
@@ -498,7 +436,6 @@ function MapComponent() {
             setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null });
 
             if (key === 'searchPoint' && clickLngLat) {
-              // Place search point directly at double-click location
               const newFeature = {
                 type: 'Feature',
                 geometry: { type: 'Point', coordinates: clickLngLat },
@@ -511,7 +448,6 @@ function MapComponent() {
               setSelectedFeatureIndexes([geoJson.features.length]);
               setActiveMode('view');
             } else {
-              // For polygons/lines, schedule a synthetic first click at the double-click location
               if (clickLngLat) {
                 pendingClickRef.current = { screenX: clickScreenX, screenY: clickScreenY };
               }
@@ -524,13 +460,19 @@ function MapComponent() {
     ),
     // Terrain toggle
     React.createElement('button', {
-      style: toggleBtnStyle,
+      style: { ...btnBaseStyle, top: '10px', 
+        background: terrainEnabled ? 'rgba(78, 204, 163, 0.9)' : 'rgba(26, 26, 46, 0.85)',
+        border: terrainEnabled ? '1px solid #4ecca3' : '1px solid rgba(255,255,255,0.25)'
+      },
       onClick: function () { setTerrainEnabled(!terrainEnabled); },
       title: terrainEnabled ? 'Disable 3D Terrain' : 'Enable 3D Terrain'
     }, terrainEnabled ? '\uD83C\uDF0D 3D' : '\uD83D\uDDFA\uFE0F 2D'),
     // Satellite toggle
     React.createElement('button', {
-      style: satelliteBtnStyle,
+      style: { ...btnBaseStyle, top: '50px',
+        background: satelliteEnabled ? 'rgba(59, 130, 246, 0.9)' : 'rgba(26, 26, 46, 0.85)',
+        border: satelliteEnabled ? '1px solid #3b82f6' : '1px solid rgba(255,255,255,0.25)'
+      },
       onClick: function () { setSatelliteEnabled(!satelliteEnabled); },
       title: satelliteEnabled ? 'Switch to Street Map' : 'Switch to Satellite'
     }, satelliteEnabled ? '\uD83D\uDEF0\uFE0F Street' : '\uD83D\uDEF0\uFE0F Satellite')
@@ -544,6 +486,8 @@ function App() {
     React.createElement(MapComponent)
   );
 }
+
+export default App;
 
 ReactDOM.render(
   React.createElement(App),
