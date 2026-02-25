@@ -303,6 +303,46 @@ function MapComponent() {
     }
   }, [geoJson, activeMode, selectedFeatureIndexes]);
 
+  // ── Terrain helpers to avoid code duplication ──
+  function applyTerrain(map) {
+    if (!map.getSource('mapterhorn-dem')) {
+      map.addSource('mapterhorn-dem', {
+        type: 'raster-dem',
+        tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
+        encoding: 'terrarium',
+        tileSize: 512
+      });
+    }
+    if (!map.getLayer('mapterhorn-hillshade')) {
+      map.addLayer({
+        id: 'mapterhorn-hillshade',
+        type: 'hillshade',
+        source: 'mapterhorn-dem',
+        paint: {
+          'hillshade-exaggeration': 0.5,
+          'hillshade-shadow-color': '#000000',
+          'hillshade-highlight-color': '#ffffff'
+        }
+      });
+    }
+    map.setTerrain({ source: 'mapterhorn-dem', exaggeration: 1.5 });
+  }
+
+  function removeTerrain(map, deck) {
+    map.setTerrain(null);
+    // Reset view to flat
+    const vs = { ...viewStateRef.current, pitch: 0, bearing: 0 };
+    viewStateRef.current = vs;
+    if (deck) deck.setProps({ viewState: vs });
+    map.jumpTo({ center: [vs.longitude, vs.latitude], zoom: vs.zoom, bearing: 0, pitch: 0 });
+    if (map.getLayer('mapterhorn-hillshade')) {
+      map.removeLayer('mapterhorn-hillshade');
+    }
+    if (map.getSource('mapterhorn-dem')) {
+      map.removeSource('mapterhorn-dem');
+    }
+  }
+
   // ── Toggle terrain on/off ──
   React.useEffect(() => {
     const map = mapRef.current;
@@ -320,49 +360,20 @@ function MapComponent() {
       }
     });
 
-    function applyTerrain() {
-      if (terrainEnabled) {
-        if (!map.getSource('mapterhorn-dem')) {
-          map.addSource('mapterhorn-dem', {
-            type: 'raster-dem',
-            tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
-            encoding: 'terrarium',
-            tileSize: 512
-          });
-        }
-        if (!map.getLayer('mapterhorn-hillshade')) {
-          map.addLayer({
-            id: 'mapterhorn-hillshade',
-            type: 'hillshade',
-            source: 'mapterhorn-dem',
-            paint: {
-              'hillshade-exaggeration': 0.5,
-              'hillshade-shadow-color': '#000000',
-              'hillshade-highlight-color': '#ffffff'
-            }
-          });
-        }
-        map.setTerrain({ source: 'mapterhorn-dem', exaggeration: 1.5 });
-      } else {
-        map.setTerrain(null);
-        // Reset view to flat
-        const vs = { ...viewStateRef.current, pitch: 0, bearing: 0 };
-        viewStateRef.current = vs;
-        deck.setProps({ viewState: vs });
-        map.jumpTo({ center: [vs.longitude, vs.latitude], zoom: vs.zoom, bearing: 0, pitch: 0 });
-        if (map.getLayer('mapterhorn-hillshade')) {
-          map.removeLayer('mapterhorn-hillshade');
-        }
-        if (map.getSource('mapterhorn-dem')) {
-          map.removeSource('mapterhorn-dem');
-        }
-      }
-    }
-
     if (map.isStyleLoaded()) {
-      applyTerrain();
+      if (terrainEnabled) {
+        applyTerrain(map);
+      } else {
+        removeTerrain(map, deck);
+      }
     } else {
-      map.once('style.load', applyTerrain);
+      map.once('style.load', () => {
+        if (terrainEnabled) {
+          applyTerrain(map);
+        } else {
+          removeTerrain(map, deck);
+        }
+      });
     }
   }, [terrainEnabled]);
 
@@ -382,27 +393,7 @@ function MapComponent() {
     // After the new style loads, re-apply terrain if it was enabled
     map.once('style.load', () => {
       if (terrainEnabledRef.current) {
-        if (!map.getSource('mapterhorn-dem')) {
-          map.addSource('mapterhorn-dem', {
-            type: 'raster-dem',
-            tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
-            encoding: 'terrarium',
-            tileSize: 512
-          });
-        }
-        if (!map.getLayer('mapterhorn-hillshade')) {
-          map.addLayer({
-            id: 'mapterhorn-hillshade',
-            type: 'hillshade',
-            source: 'mapterhorn-dem',
-            paint: {
-              'hillshade-exaggeration': 0.5,
-              'hillshade-shadow-color': '#000000',
-              'hillshade-highlight-color': '#ffffff'
-            }
-          });
-        }
-        map.setTerrain({ source: 'mapterhorn-dem', exaggeration: 1.5 });
+        applyTerrain(map);
       }
     });
   }, [satelliteEnabled]);
