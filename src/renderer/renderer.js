@@ -5,6 +5,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 import { MapboxOverlay } from '@deck.gl/mapbox';
+import { PolygonLayer, PathLayer } from '@deck.gl/layers';
 import {
   EditableGeoJsonLayer,
   DrawPolygonMode,
@@ -26,12 +27,13 @@ const MODES = {
 };
 
 // ── Per-feature-type color palette ──
+// tentativeFill/tentativeLine are optional overrides for drawing preview
 const FEATURE_COLORS = {
   nfz:         { fill: [220, 53, 69, 90],   line: [220, 53, 69, 220]  },
   searchZone:  { fill: [59, 130, 246, 80],  line: [59, 130, 246, 220] },
   route:       { fill: [156, 163, 175, 80], line: [156, 163, 175, 220]},
   searchPoint: { fill: [59, 130, 246, 200], line: [59, 130, 246, 255] },
-  geofence:    { fill: [0, 0, 0, 0],        line: [255, 165, 0, 240]  },
+  geofence:    { fill: [0, 0, 0, 0],        line: [0, 0, 0, 0],        tentativeFill: [255, 165, 0, 60], tentativeLine: [255, 165, 0, 240] }, // Final invisible, preview visible
   _default:    { fill: [78, 204, 163, 100], line: [78, 204, 163, 220] }
 };
 
@@ -247,7 +249,12 @@ function MapComponent() {
     if (!overlay || !map) return;
 
     const ModeClass = MODES[activeMode].mode;
-    const tentativeColors = FEATURE_COLORS[activeMode] || FEATURE_COLORS._default;
+    const colorDef = FEATURE_COLORS[activeMode] || FEATURE_COLORS._default;
+    // Use tentative overrides if defined, otherwise fall back to fill/line
+    const tentativeColors = {
+      fill: colorDef.tentativeFill || colorDef.fill,
+      line: colorDef.tentativeLine || colorDef.line
+    };
 
     // WHY: Query terrain elevation at each coordinate so geometry follows terrain surface.
     // Without this, geometries render at sea level and appear to slide around.
@@ -372,8 +379,51 @@ function MapComponent() {
       } : {}
     });
 
+    // WHY: Geofence curtain layer creates a 3D extruded "fence" effect.
+    // Uses PolygonLayer for GPU-optimized extrusion while EditableGeoJsonLayer handles 2D editing.
+    const geofenceFeatures = dataWithElevation.features.filter(f => f.properties?.featureType === 'geofence');
+    
+    const curtainLayer = new PolygonLayer({
+      id: 'geofence-curtain',
+      data: geofenceFeatures,
+      extruded: true,
+      wireframe: false,
+      getPolygon: f => f.geometry.coordinates[0] || f.geometry.coordinates,
+      getElevation: 150, // Height of the curtain in meters
+      getFillColor: [255, 165, 0, 100], // Translucent Orange for walls
+      pickable: false, // Let the EditableGeoJsonLayer handle clicks
+      // WHY: Always enable depth for proper 3D rendering regardless of terrain mode
+      parameters: {
+        depthWriteEnabled: true,
+        depthCompare: 'less-equal'
+      }
+    });
+
+    // WHY: PathLayer draws crisp border lines at the top of the curtain.
+    // Separate from PolygonLayer wireframe for better visual control.
+    const curtainBorderLayer = new PathLayer({
+      id: 'geofence-curtain-border',
+      data: geofenceFeatures,
+      getPath: f => {
+        // Get the outer ring of the polygon and add elevation
+        const coords = f.geometry.coordinates[0] || f.geometry.coordinates;
+        return coords.map(c => [c[0], c[1], (c[2] || 0) + 150]); // Add curtain height
+      },
+      getColor: [255, 165, 0, 255],
+      getWidth: 3,
+      widthMinPixels: 2,
+      pickable: false,
+      parameters: {
+        depthWriteEnabled: true,
+        depthCompare: 'less-equal'
+      },
+      transitions: {
+        getPath: 400
+      }
+    });
+
     overlay.setProps({
-      layers: [editableLayer],
+      layers: [curtainLayer, curtainBorderLayer, editableLayer], // Curtain and border behind the edit handles
       // WHY: Sync internal deck.gl cursor state with our active mode
       getCursor: () => (activeMode !== 'view' ? (activeMode === 'modify' ? 'grab' : 'crosshair') : 'auto')
     });
