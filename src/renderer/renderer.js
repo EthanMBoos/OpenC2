@@ -243,34 +243,103 @@ function MapComponent() {
   // ── 4. Render Deck.gl Layers ──
   React.useEffect(() => {
     const overlay = deckOverlayRef.current;
-    if (!overlay) return;
+    const map = mapRef.current;
+    if (!overlay || !map) return;
 
     const ModeClass = MODES[activeMode].mode;
     const tentativeColors = FEATURE_COLORS[activeMode] || FEATURE_COLORS._default;
 
+    // WHY: Query terrain elevation at each coordinate so geometry follows terrain surface.
+    // Without this, geometries render at sea level and appear to slide around.
+    const getTerrainElevation = (coord) => {
+      if (!terrainEnabled || !map.getTerrain()) return 0;
+      try {
+        const elev = map.queryTerrainElevation({ lng: coord[0], lat: coord[1] });
+        return (elev || 0) + 10; // +10m offset to float above terrain
+      } catch {
+        return 10;
+      }
+    };
+
+    // WHY: Transform 2D coordinates to 3D by adding terrain elevation as z-coordinate.
+    // This makes geometry follow the terrain surface instead of rendering at sea level.
+    const addElevationToCoords = (coords) => {
+      if (!Array.isArray(coords)) return coords;
+      if (typeof coords[0] === 'number') {
+        // Single coordinate [lng, lat] or [lng, lat, z]
+        return [coords[0], coords[1], getTerrainElevation(coords)];
+      }
+      // Nested array (rings, lines, etc.)
+      return coords.map(c => addElevationToCoords(c));
+    };
+
+    const transformGeometry = (geom) => {
+      if (!geom || !terrainEnabled) return geom;
+      return {
+        ...geom,
+        coordinates: addElevationToCoords(geom.coordinates)
+      };
+    };
+
+    // Transform geoJson to include z-coordinates when terrain is enabled
+    const dataWithElevation = terrainEnabled ? {
+      ...geoJson,
+      features: geoJson.features.map(f => ({
+        ...f,
+        geometry: transformGeometry(f.geometry)
+      }))
+    } : geoJson;
+
     const editableLayer = new EditableGeoJsonLayer({
       id: 'editable-geojson',
-      data: geoJson,
+      data: dataWithElevation,
       mode: ModeClass,
       selectedFeatureIndexes,
 
+      // WHY: Disable depth testing so layers render on top of terrain
+      parameters: terrainEnabled ? {
+        depthWriteEnabled: false,
+        depthCompare: 'always'
+      } : {},
+
       onEdit: ({ updatedData, editType }) => {
+        // WHY: Strip z-coordinates from edited data so we always store 2D coords.
+        // Elevation is added dynamically during render based on current terrain.
+        const stripElevation = (coords) => {
+          if (!Array.isArray(coords)) return coords;
+          if (typeof coords[0] === 'number') {
+            return [coords[0], coords[1]]; // Keep only lng, lat
+          }
+          return coords.map(c => stripElevation(c));
+        };
+        
+        const cleanData = {
+          ...updatedData,
+          features: updatedData.features.map(f => ({
+            ...f,
+            geometry: f.geometry ? {
+              ...f.geometry,
+              coordinates: stripElevation(f.geometry.coordinates)
+            } : f.geometry
+          }))
+        };
+
         if (editType === 'addFeature') {
-          const lastIdx = updatedData.features.length - 1;
-          updatedData = {
-            ...updatedData,
-            features: updatedData.features.map((f, i) =>
+          const lastIdx = cleanData.features.length - 1;
+          const finalData = {
+            ...cleanData,
+            features: cleanData.features.map((f, i) =>
               i === lastIdx
                 ? { ...f, properties: { ...f.properties, featureType: activeMode } }
                 : f
             )
           };
           drawJustFinishedRef.current = true;
-          setGeoJson(updatedData);
+          setGeoJson(finalData);
           setActiveMode('view');
           setSelectedFeatureIndexes([lastIdx]);
         } else {
-          setGeoJson(updatedData);
+          setGeoJson(cleanData);
         }
       },
 
@@ -290,7 +359,17 @@ function MapComponent() {
       editHandlePointRadiusMinPixels: 4,
 
       pickable: true,
-      autoHighlight: false
+      autoHighlight: false,
+
+      // WHY: Propagate depth parameters to all sublayers (polygons, lines, points, edit handles)
+      // EditableGeoJsonLayer is composite, so parameters must reach each sublayer.
+      _subLayerProps: terrainEnabled ? {
+        'polygons-fill': { parameters: { depthWriteEnabled: false, depthCompare: 'always' } },
+        'polygons-stroke': { parameters: { depthWriteEnabled: false, depthCompare: 'always' } },
+        'linestrings': { parameters: { depthWriteEnabled: false, depthCompare: 'always' } },
+        'points-circle': { parameters: { depthWriteEnabled: false, depthCompare: 'always' } },
+        'points-icon': { parameters: { depthWriteEnabled: false, depthCompare: 'always' } }
+      } : {}
     });
 
     overlay.setProps({
@@ -298,7 +377,7 @@ function MapComponent() {
       // WHY: Sync internal deck.gl cursor state with our active mode
       getCursor: () => (activeMode !== 'view' ? (activeMode === 'modify' ? 'grab' : 'crosshair') : 'auto')
     });
-  }, [geoJson, activeMode, selectedFeatureIndexes]);
+  }, [geoJson, activeMode, selectedFeatureIndexes, terrainEnabled]);
 
   // ── 5. Native MapLibre Terrain Helpers ──
   // WHY: We use MapLibre's native terrain instead of deck.gl's TerrainLayer 
