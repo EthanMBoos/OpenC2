@@ -21,80 +21,85 @@ OpenC2 prioritizes **Data Sovereignty** and **Low-Latency Ingestion**. By utiliz
 ```mermaid
 flowchart LR
     %% External Fleet
-    Fleet(("🛸 <b>Zenoh Data Bus</b><br/>(Fleet Protobuf Stream)"))
+    Fleet(("🛸 UDP Data Bus<br/>(Fleet Protobuf Stream)"))
 
-    subgraph Electron ["Electron Application"]
+    %% Headless Data Gateway (Rust)
+    subgraph RustGateway ["Rust Telemetry Gateway (Sidecar)"]
+        direction TB
+        UDP_Node["UDP Socket Listener<br/>(tokio::net)"]
+        Decoder["Protobuf Decoder<br/>(prost)"]
+        WsServer["Distribution API<br/>(WebSocket Port Listener)"]
+        
+        UDP_Node --> Decoder --> WsServer
+    end
+
+    %% Main C2 Client
+    subgraph Electron ["Electron Application (Frontend)"]
         direction LR
+        WsClient["Stream Client<br/>(WebSocket)"]
 
-        %% Data Handling
-        subgraph Pipeline ["Ingestion & Processing"]
-            Z_Node["<b>Zenoh Node</b>"]
-            Decoder["<b>Protobuf Decoder</b><br/>(Worker Thread)"]
-            
-            Z_Node --> Decoder
-        end
-
-        %% Visualization
         subgraph UI ["Map Interface"]
-            State["<b>Zustand Store</b>"]
+            State["React State<br/>(Zustand)"]
             
             subgraph Map ["Visualization Stack"]
                 direction TB
-                Deck["<b>Deck.gl</b><br/>(3D Assets)"]
-                MapLibre["<b>MapLibre</b><br/>(Terrain)"]
+                Deck["Deck.gl<br/>(3D Layers)"]
+                MapLibre["MapLibre<br/>(Tiles + Terrain)"]
             end
             
             State --> Deck
             Deck <--> MapLibre
         end
+        WsClient --> State
     end
 
-    %% Main Connection
-    Fleet ==> Z_Node
-    Decoder ==> State
+    %% Connections
+    Fleet ==> UDP_Node
+    WsServer == "POJO Stream" ==> WsClient
 
     %% Styling
     classDef bus fill:#ff4e00,stroke:#fff,stroke-width:2px,color:#fff;
-    classDef pipe fill:#1a1a2e,stroke:#4ecca3,stroke-width:2px,color:#fff;
+    classDef backend fill:#1a1a2e,stroke:#4ecca3,stroke-width:2px,color:#fff;
     classDef ui fill:#16213e,stroke:#3498db,stroke-width:2px,color:#fff;
 
     class Fleet bus;
-    class Pipeline pipe;
-    class UI,Map ui;
+    class RustGateway backend;
+    class Electron,UI,Map ui;
 ```
 
 ## 🛠️ Technical Pillars
 
-### 1. Deck.gl Rendering Engine
-Serves as the heavy-lift visualization engine, interleaved directly into the MapLibre render loop.
-
-
-
-* **Terrain Masking:** Enables 3D assets to correctly intersect with hillshading and buildings rather than simply floating on top.
-* **Synchronized Z-Axis:** Strictly syncs `terrainExaggeration` and `elevationOffset` to ensure dynamic asset coordinates match the map's vertical scaling in real-time.
-* **Instance Reactive Elements:** Renders thousands of entities (robots, breadcrumbs, frustums) in a single draw call via WebGL/WebGPU for maximum performance.
-
-### 2. Protobuf Ingestion Pipeline
-Bypasses the "JSON bottleneck" by decoding binary streams directly into the application state.
-
-
-
-* **Type Parity:** Compiles `.proto` definitions into static JS modules for 1:1 parity with ROS2 messages.
-* **Structured Cloning:** Passes decoded POJOs (Plain Old JavaScript Objects) from workers to the UI thread to keep the main loop responsive at 60FPS.
-
-### 3. Data Sovereign Spatial Context
+### 1. Data Sovereign Spatial Context
 * **OpenFreeMap Fork:** A local style schema fork that strips civilian noise (POIs) and highlights tactical features.
 * **PMTiles Support:** Host the planet (or mission-specific AOIs) via a 100GB+ local archive for fully air-gapped operations.
 * **Protocol Interceptor:** Maps `tiles://` requests directly to local storage, ensuring zero reliance on external networks or public APIs.
 
-### 4. Tactical Markup
+### 2. Deck.gl + MapLibre Interleaved Rendering
+Uses the `MapboxOverlay` from `@deck.gl/mapbox` in **interleaved mode** to share a single WebGL context with MapLibre. This architecture eliminates Electron compositing bugs and guarantees proper 3D depth sorting between map tiles and deck.gl layers.
+
+* **Shared WebGL Context:** `MapboxOverlay` is added as a MapLibre control, avoiding separate canvas stacking issues common in Electron.
+* **Dynamic Terrain Elevation:** When 3D terrain is enabled, geometry coordinates are transformed via `map.queryTerrainElevation()` to follow the terrain surface.
+* **Depth Parameter Management:** Sublayer depth testing (`depthWriteEnabled`, `depthCompare`) is configured to ensure proper rendering order with terrain.
+
+### 3. Tactical Markup
 Drawing and editing geographic features directly on the map using **`@deck.gl-community/editable-layers`** (the deck.gl v9 successor to Nebula.gl).
 
-* **Standalone Deck Instance:** A `Deck` overlay sits on top of MapLibre and owns all pointer events. MapLibre renders tiles only (`interactive: false`), while `Deck` drives navigation and drawing. The two stay in sync via `map.jumpTo()` on every view state change. This architecture is required because `EditableGeoJsonLayer` needs direct pointer events on the deck canvas to place vertices on empty map space — `MapboxOverlay` cannot provide this since its canvas uses `pointer-events: none`.
-* **EditableGeoJsonLayer:** Supports `DrawPolygonMode`, `DrawLineStringMode`, `DrawPointMode`, `ModifyMode`, and `ViewMode`. Click to place vertices, double-click to finish a polygon. The layer manages a `FeatureCollection` in React state and auto-switches to Select mode after each feature is drawn.
-* **Webpack Bundler:** deck.gl v9 is distributed as ES modules and requires a build step. The renderer is bundled with webpack (`electron-renderer` target) and the output is loaded by the Electron HTML shell from `dist/renderer.bundle.js`.
-* **Terrain-Aware Draping:** Waypoints and perimeters "clamp" to the `raster-dem` elevation model.
-* **Volumetric Fences:** 3D extrusions for visualizing vertical geofences and "Safe Altitude" corridors.
+* **Interleaved Overlay Architecture:** Uses `MapboxOverlay` in interleaved mode with MapLibre `interactive: true`. MapLibre handles pan/zoom in view mode, while `dragPan` is disabled during drawing to let editable-layers capture mouse events. Double-click events are intercepted at the DOM level and injected into Deck.gl's event bus to properly finish shapes.
+* **EditableGeoJsonLayer:** Supports `DrawPolygonMode`, `DrawLineStringMode`, `DrawPointMode`, `ModifyMode`, and `ViewMode`. Click to place vertices, double-click to finish. Auto-switches to Select mode after each feature is drawn.
+* **Mission Object Types:**
+  - **NFZ (No-Fly Zone):** Red polygons with configurable floor and ceiling altitudes, rendered as 3D boxes with walls and ceiling
+  - **Geofence:** Orange curtain walls (no ground fill), rendered as vertical quads with configurable altitude
+  - **Search Zone:** Blue polygons with an elevated ceiling layer at configurable altitude
+  - **Route:** Emerald green line paths rendered at configurable altitude
+  - **Search Point:** Blue point markers placed via single click
+* **Property Panel:** After drawing a feature, a side panel opens to configure altitude parameters (floor/ceiling for NFZ, altitude for others).
+* **3D Visualization Layers:** Features are rendered using `SolidPolygonLayer` for walls/ceilings and `PathLayer` for routes/borders, all with proper depth testing.
+
+### 4. The Pipeline
+1. **Ingestion (Headless Gateway):** Raw **UDP Datagrams** are captured via a dedicated **Rust/Zenoh** sidecar daemon.
+2. **Processing & Caching:** The Rust gateway decodes **Protobuf** payloads in real-time, maintaining a localized, in-memory state of the fleet.
+3. **Distribution:** Clean, decoded telemetry is streamed to the frontend via a **WebSocket** port listener.
+4. **Visualization:** Decoded Plain Old JavaScript Objects (POJOs) pipe directly from the local stream client into a **Zustand** store, triggering reactive updates in the **Deck.gl** and **MapLibre** stack at a steady 60FPS.
 
 ---
 
@@ -102,22 +107,24 @@ Drawing and editing geographic features directly on the map using **`@deck.gl-co
 
 | Layer | Technologies |
 | :--- | :--- |
-| **Robotics** | ROS2, Zenoh, Gazebo Sim, Docker |
-| **Frontend** | React, Electron, Zustand, TypeScript |
-| **Graphics** | Deck.gl, MapLibre (WebGL/WebGPU), @deck.gl-community/editable-layers |
+| **Frontend** | React, Electron, JavaScript |
+| **Backend Gateway** | Rust, Tokio, zenoh-rs, WebSockets |
+| **Graphics** | Deck.gl, MapLibre (WebGL), @deck.gl-community/editable-layers |
 | **Data** | Protobuf, PMTiles, Uint8Array Streams |
 
 ## 🗺️ Roadmap
 
 ### Phase I: Data Fidelity
-- [ ] **Satellite Integration:** Photographic ground truth for terminal-phase views.
-- [ ] **Procedural Extrusions:** On-the-fly 3D urban geometry generation from map metadata.
-- [ ] **LiDAR/Photogrammetry Patching:** Centimeter-accurate terrain overrides for specific Areas of Interest (AOIs).
+- [x] **Satellite Integration:** ESRI World Imagery base layer toggle for aerial context.
+- [x] **3D Terrain:** MapLibre native terrain with raster-dem source and hillshading.
+- [x] **Tactical Markup & Editing:** Mission element drawing in 2D/3D with automatic terrain draping (curtains/walls) and intuitive geometry editing.
+- [ ] **Headless Rust Gateway:** Extract UDP/Protobuf ingestion into a separate backend repository and implement the Zustand WebSocket client for reactive UI updates.
 
 ### Phase II: Command & Sensory Integration
+- [ ] **Augmented Sensor Frustums:** Projecting camera FOV footprints and planned paths as dynamic 3D meshes on the terrain using gimbal telemetry.
+- [ ] **Air-Gapped Map Storage:** Full offline PMTiles integration for both routing basemaps and high-resolution 3D terrain data.
 - [ ] **WebRTC Pipeline:** Low-latency (<300ms) glass-to-glass video streaming for real-time verification.
 - [ ] **Interest-Driven Uplink:** "Silent-Running" state that only triggers high-bandwidth streams upon edge-detection alerts.
-- [ ] **Augmented Sensor Frustums:** Projecting camera FOV footprints as dynamic 3D meshes on the terrain using gimbal telemetry.
 
 ---
 
@@ -136,17 +143,21 @@ OpenC2 is a research project. We welcome contributions that focus on performance
 > In development, `npm run watch` rebuilds automatically on file changes.
 
 > **Drawing on the map**
-> Use the toolbar on the left side of the map:
-> - **Select** — pan/zoom the map
-> - **Polygon / Line / Point** — click to place vertices, double-click to finish
-> - **Modify** — drag vertices of existing features
+> Double-click on empty map space to open the **Mission Objects** context menu, then select a feature type:
+> - **NFZ** — Draw a no-fly zone polygon (red)
+> - **Search Zone** — Draw a search area polygon (blue)
+> - **Geofence** — Draw a geofence boundary with vertical walls (orange)
+> - **Route** — Draw a flight path line (green)
+> - **Search Point** — Place a point marker (blue)
 >
+> Click to place vertices, double-click to finish. After drawing, a property panel opens to configure altitude settings.
+> Double-click an existing feature to modify it. Press `Delete`/`Backspace` to remove selected features.
 > The cursor changes to a crosshair when a drawing mode is active.
 
-> **Map testing**
-> For early development you can point MapLibre at a public style URL such as the OpenFreeMap ’liberty’ style. The renderer already includes a `MapComponent` that loads:
-> ```js
-> style: 'https://tiles.openfreemap.org/styles/liberty'
-> ```
-> Once you switch to self-hosted tiles or your own style JSON, simply update the `style` property or intercept `tiles://` requests accordingly.
+> **Map controls**
+> - **3D/2D Toggle** (top-right): Enable/disable 3D terrain with hillshading
+> - **Satellite Toggle** (top-right): Switch between OpenFreeMap street style and ESRI satellite imagery
+> - When terrain is enabled, drag-rotate and touch-rotate are unlocked for 3D navigation
+>
+> The default style is OpenFreeMap 'liberty'. Terrain tiles are sourced from Mapterhorn.
 
