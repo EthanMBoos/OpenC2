@@ -5,7 +5,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 import { MapboxOverlay } from '@deck.gl/mapbox';
-import { PolygonLayer, PathLayer } from '@deck.gl/layers';
+import { PolygonLayer, PathLayer, SolidPolygonLayer } from '@deck.gl/layers';
 import {
   EditableGeoJsonLayer,
   DrawPolygonMode,
@@ -33,7 +33,7 @@ const FEATURE_COLORS = {
   searchZone:  { fill: [59, 130, 246, 80],  line: [59, 130, 246, 220] },
   route:       { fill: [156, 163, 175, 80], line: [156, 163, 175, 220]},
   searchPoint: { fill: [59, 130, 246, 200], line: [59, 130, 246, 255] },
-  geofence:    { fill: [0, 0, 0, 0],        line: [0, 0, 0, 0],        tentativeFill: [255, 165, 0, 60], tentativeLine: [255, 165, 0, 240] }, // Final invisible, preview visible
+  geofence:    { fill: [0, 0, 0, 0],        line: [0, 0, 0, 0],        tentativeFill: [255, 165, 0, 60], tentativeLine: [255, 165, 0, 240] }, // Invisible ground, walls rendered separately
   _default:    { fill: [78, 204, 163, 100], line: [78, 204, 163, 220] }
 };
 
@@ -83,6 +83,8 @@ function MapComponent() {
   });
   const [selectedFeatureIndexes, setSelectedFeatureIndexes] = React.useState([]);
   const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0, lngLat: null });
+  const [geofenceAltitude, setGeofenceAltitude] = React.useState(150);
+  const [showAltitudeControl, setShowAltitudeControl] = React.useState(false);
 
   // ── 1. Initialize Interleaved MapLibre + Deck.gl ──
   React.useEffect(() => {
@@ -187,18 +189,34 @@ function MapComponent() {
       // --- SCENARIO B: User is in View/Modify mode ---
       if (drawJustFinishedRef.current) {
         drawJustFinishedRef.current = false;
-        return;
+        // Still allow picking the feature immediately after drawing
       }
 
       const overlay = deckOverlayRef.current;
       if (overlay) {
         // Check if user double-clicked an existing shape to modify it
         const picked = overlay.pickObject({ x, y });
-        if (picked && picked.index != null && picked.index >= 0) {
-          setSelectedFeatureIndexes([picked.index]);
-          setActiveMode('modify');
-          return;
+        if (picked) {
+          // Handle wall segment picks (geofence curtain)
+          if (picked.object && picked.object.featureIndex != null) {
+            setSelectedFeatureIndexes([picked.object.featureIndex]);
+            setActiveMode('modify');
+            return;
+          }
+          // Handle regular feature picks (EditableGeoJsonLayer)
+          if (picked.index != null && picked.index >= 0) {
+            setSelectedFeatureIndexes([picked.index]);
+            setActiveMode('modify');
+            return;
+          }
         }
+      }
+
+      // User double-clicked empty space: exit modify mode or open menu
+      if (activeMode === 'modify') {
+        setActiveMode('view');
+        setSelectedFeatureIndexes([]);
+        return;
       }
 
       // User double-clicked empty space: Open the mission menu
@@ -217,6 +235,16 @@ function MapComponent() {
         setMissionMenu((prev) => ({ ...prev, visible: false }));
         setActiveMode((prev) => (prev !== 'view' ? 'view' : prev));
         setSelectedFeatureIndexes([]);
+        setShowAltitudeControl(false);
+        drawJustFinishedRef.current = false; // Reset so double-click works again
+      }
+      if (e.key === 'Enter') {
+        if (showAltitudeControl) {
+          setShowAltitudeControl(false);
+        } else if (activeMode === 'modify') {
+          setActiveMode('view');
+          setSelectedFeatureIndexes([]);
+        }
       }
       if ((e.key === 'Backspace' || e.key === 'Delete') && selectedFeatureIndexes.length > 0) {
         e.preventDefault();
@@ -240,7 +268,7 @@ function MapComponent() {
       window.removeEventListener('click', handleClick);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [activeMode, selectedFeatureIndexes]);
+  }, [activeMode, selectedFeatureIndexes, showAltitudeControl]);
 
   // ── 4. Render Deck.gl Layers ──
   React.useEffect(() => {
@@ -345,6 +373,9 @@ function MapComponent() {
           setGeoJson(finalData);
           setActiveMode('view');
           setSelectedFeatureIndexes([lastIdx]);
+          if (activeMode === 'geofence') {
+            setShowAltitudeControl(true);
+          }
         } else {
           setGeoJson(cleanData);
         }
@@ -380,19 +411,57 @@ function MapComponent() {
     });
 
     // WHY: Geofence curtain layer creates a 3D extruded "fence" effect.
-    // Uses PolygonLayer for GPU-optimized extrusion while EditableGeoJsonLayer handles 2D editing.
+    // Instead of relying on PolygonLayer extrusion (which always draws a top cap),
+    // we generate actual wall geometry as vertical quads for each edge.
     const geofenceFeatures = dataWithElevation.features.filter(f => f.properties?.featureType === 'geofence');
     
-    const curtainLayer = new PolygonLayer({
+    // Build a map of geofence feature indices for picking
+    const geofenceIndexMap = new Map();
+    dataWithElevation.features.forEach((f, idx) => {
+      if (f.properties?.featureType === 'geofence') {
+        geofenceIndexMap.set(f, idx);
+      }
+    });
+    
+    // Transform polygon outlines into vertical wall segments
+    const wallHeight = geofenceAltitude;
+    const wallSegments = [];
+    
+    geofenceFeatures.forEach(feature => {
+      const coords = feature.geometry.coordinates[0] || feature.geometry.coordinates;
+      if (!Array.isArray(coords) || coords.length < 2) return;
+      
+      const featureIndex = geofenceIndexMap.get(feature);
+      
+      // For each edge of the polygon, create a vertical wall quad
+      for (let i = 0; i < coords.length - 1; i++) {
+        const p1 = coords[i];
+        const p2 = coords[i + 1];
+        const baseZ1 = p1[2] || 0;
+        const baseZ2 = p2[2] || 0;
+        
+        // Create a vertical quad (4 corners forming a wall segment)
+        // Order: bottom-left, bottom-right, top-right, top-left
+        wallSegments.push({
+          featureIndex,
+          polygon: [
+            [p1[0], p1[1], baseZ1],           // bottom-left
+            [p2[0], p2[1], baseZ2],           // bottom-right
+            [p2[0], p2[1], baseZ2 + wallHeight], // top-right
+            [p1[0], p1[1], baseZ1 + wallHeight]  // top-left
+          ]
+        });
+      }
+    });
+    
+    const curtainLayer = new SolidPolygonLayer({
       id: 'geofence-curtain',
-      data: geofenceFeatures,
-      extruded: true,
-      wireframe: false,
-      getPolygon: f => f.geometry.coordinates[0] || f.geometry.coordinates,
-      getElevation: 150, // Height of the curtain in meters
+      data: wallSegments,
+      _full3d: true, // WHY: Enable full 3D mode to properly render vertical wall geometry
+      getPolygon: d => d.polygon,
       getFillColor: [255, 165, 0, 100], // Translucent Orange for walls
-      pickable: false, // Let the EditableGeoJsonLayer handle clicks
-      // WHY: Always enable depth for proper 3D rendering regardless of terrain mode
+      pickable: true, // Enable picking on walls for geofence selection
+      // WHY: Always enable depth for proper 3D rendering
       parameters: {
         depthWriteEnabled: true,
         depthCompare: 'less-equal'
@@ -401,18 +470,24 @@ function MapComponent() {
 
     // WHY: PathLayer draws crisp border lines at the top of the curtain.
     // Separate from PolygonLayer wireframe for better visual control.
+    // Add featureIndex for picking
+    const geofenceBorderData = geofenceFeatures.map(f => ({
+      feature: f,
+      featureIndex: geofenceIndexMap.get(f)
+    }));
+    
     const curtainBorderLayer = new PathLayer({
       id: 'geofence-curtain-border',
-      data: geofenceFeatures,
-      getPath: f => {
+      data: geofenceBorderData,
+      getPath: d => {
         // Get the outer ring of the polygon and add elevation
-        const coords = f.geometry.coordinates[0] || f.geometry.coordinates;
-        return coords.map(c => [c[0], c[1], (c[2] || 0) + 150]); // Add curtain height
+        const coords = d.feature.geometry.coordinates[0] || d.feature.geometry.coordinates;
+        return coords.map(c => [c[0], c[1], (c[2] || 0) + wallHeight]); // Add curtain height
       },
       getColor: [255, 165, 0, 255],
       getWidth: 3,
       widthMinPixels: 2,
-      pickable: false,
+      pickable: true, // Enable picking on border for geofence selection
       parameters: {
         depthWriteEnabled: true,
         depthCompare: 'less-equal'
@@ -427,7 +502,7 @@ function MapComponent() {
       // WHY: Sync internal deck.gl cursor state with our active mode
       getCursor: () => (activeMode !== 'view' ? (activeMode === 'modify' ? 'grab' : 'crosshair') : 'auto')
     });
-  }, [geoJson, activeMode, selectedFeatureIndexes, terrainEnabled]);
+  }, [geoJson, activeMode, selectedFeatureIndexes, terrainEnabled, geofenceAltitude]);
 
   // ── 5. Native MapLibre Terrain Helpers ──
   // WHY: We use MapLibre's native terrain instead of deck.gl's TerrainLayer 
@@ -604,6 +679,65 @@ function MapComponent() {
       onClick: function () { setTerrainEnabled(!terrainEnabled); },
       title: terrainEnabled ? 'Disable 3D Terrain' : 'Enable 3D Terrain'
     }, terrainEnabled ? '\uD83C\uDF0D 3D' : '\uD83D\uDDFA\uFE0F 2D'),
+    // Geofence altitude control
+    showAltitudeControl && React.createElement('div', {
+      style: {
+        position: 'absolute',
+        left: '10px',
+        bottom: '20px',
+        zIndex: 10,
+        background: 'rgba(26, 26, 46, 0.95)',
+        border: '1px solid rgba(255, 165, 0, 0.6)',
+        borderRadius: '8px',
+        padding: '12px 16px',
+        minWidth: '140px',
+        boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+        backdropFilter: 'blur(8px)',
+        fontFamily: 'sans-serif',
+        fontSize: '13px',
+        color: '#fff'
+      },
+      onClick: (e) => e.stopPropagation()
+    },
+      React.createElement('div', {
+        style: { marginBottom: '8px', fontWeight: 600, color: 'rgba(255, 165, 0, 0.9)' }
+      }, '\uD83D\uDEA7 Geofence Altitude'),
+      React.createElement('div', {
+        style: { display: 'flex', alignItems: 'center', gap: '8px' }
+      },
+        React.createElement('input', {
+          type: 'number',
+          value: geofenceAltitude,
+          autoFocus: true,
+          onChange: (e) => setGeofenceAltitude(Number(e.target.value)),
+          onKeyDown: (e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              setShowAltitudeControl(false);
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              setShowAltitudeControl(false);
+            }
+            e.stopPropagation();
+          },
+          style: {
+            width: '80px',
+            padding: '6px 10px',
+            borderRadius: '4px',
+            border: '1px solid rgba(255,255,255,0.3)',
+            background: 'rgba(0,0,0,0.3)',
+            color: '#fff',
+            fontSize: '14px',
+            textAlign: 'center'
+          }
+        }),
+        React.createElement('span', { style: { color: 'rgba(255,255,255,0.6)' } }, 'm')
+      ),
+      React.createElement('div', {
+        style: { marginTop: '8px', fontSize: '11px', color: 'rgba(255,255,255,0.5)' }
+      }, 'Enter to confirm')
+    ),
     // Satellite toggle
     React.createElement('button', {
       style: { ...btnBaseStyle, top: '50px',
