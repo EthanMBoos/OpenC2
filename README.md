@@ -1,16 +1,11 @@
 # OpenC2 🛰️
 
 ## 📖 Overview
-
 **OpenC2** is a high-performance Command and Control interface built with Electron and React. It is designed to bridge the critical gap between low-level debugging (RViz) and legacy ground stations (MissionPlanner). 
 
 While traditional tools are often too resource-heavy for field use or too rigid to scale, OpenC2 utilizes a **multi-threaded, binary-first architecture** to handle high-frequency ROS2 telemetry across diverse robotic fleets.
 
-
-
-
 ## 🏗️ System Architecture
-
 OpenC2 prioritizes **Data Sovereignty** and **Low-Latency Ingestion**. By utilizing a custom protocol interceptor within an Electron wrapper, the system remains fully operational in denied, air-gapped environments.
 
 ### The Pipeline
@@ -104,7 +99,6 @@ Drawing and editing geographic features directly on the map using **`@deck.gl-co
 ---
 
 ## 🚀 Stack
-
 | Layer | Technologies |
 | :--- | :--- |
 | **Frontend** | React, Electron, JavaScript |
@@ -113,23 +107,21 @@ Drawing and editing geographic features directly on the map using **`@deck.gl-co
 | **Data** | Protobuf, PMTiles, Uint8Array Streams |
 
 ## 🗺️ Roadmap
-
 ### Phase I: Data Fidelity
 - [x] **Satellite Integration:** ESRI World Imagery base layer toggle for aerial context.
 - [x] **3D Terrain:** MapLibre native terrain with raster-dem source and hillshading.
 - [x] **Tactical Markup & Editing:** Mission element drawing in 2D/3D with automatic terrain draping (curtains/walls) and intuitive geometry editing.
 - [ ] **Headless Rust Gateway:** Extract UDP/Protobuf ingestion into a separate backend repository and implement the Zustand WebSocket client for reactive UI updates.
+- [ ] **Air-Gapped Map Storage:** Full offline PMTiles integration for both routing basemaps and high-resolution 3D terrain data.
 
 ### Phase II: Command & Sensory Integration
 - [ ] **Augmented Sensor Frustums:** Projecting camera FOV footprints and planned paths as dynamic 3D meshes on the terrain using gimbal telemetry.
-- [ ] **Air-Gapped Map Storage:** Full offline PMTiles integration for both routing basemaps and high-resolution 3D terrain data.
 - [ ] **WebRTC Pipeline:** Low-latency (<300ms) glass-to-glass video streaming for real-time verification.
 - [ ] **Interest-Driven Uplink:** "Silent-Running" state that only triggers high-bandwidth streams upon edge-detection alerts.
 
 ---
 
 ## 🤝 Contributing
-
 OpenC2 is a research project. We welcome contributions that focus on performance optimizations in the telemetry pipeline or advanced spatial visualization.
 
 1.  **Clone the repository:** `git clone https://github.com/EthanMBoos/OpenC2.git`
@@ -160,4 +152,3 @@ OpenC2 is a research project. We welcome contributions that focus on performance
 > - When terrain is enabled, drag-rotate and touch-rotate are unlocked for 3D navigation
 >
 > The default style is OpenFreeMap 'liberty'. Terrain tiles are sourced from Mapterhorn.
-
