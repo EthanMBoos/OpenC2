@@ -17,13 +17,14 @@ import {
 
 // ── Drawing mode definitions ──
 const MODES = {
-  view:       { label: '\u{1F446} Select',       mode: ViewMode },
-  modify:     { label: '\u270F\uFE0F Modify',       mode: ModifyMode },
-  nfz:        { label: '\u26D4 NFZ',             mode: DrawPolygonMode },
-  searchZone: { label: '\u{1F50D} Search Zone',   mode: DrawPolygonMode },
-  route:      { label: '\u2192 Route',            mode: DrawLineStringMode },
-  searchPoint:{ label: '\u{1F4CD} Search Point',  mode: DrawPointMode },
-  geofence:   { label: '\u{1F6A7} Geofence',       mode: DrawPolygonMode }
+  view:        { label: '\u{1F446} Select',        mode: ViewMode },
+  modify:      { label: '\u270F\uFE0F Modify',        mode: ModifyMode },
+  nfz:         { label: '\u26D4 NFZ',              mode: DrawPolygonMode },
+  searchZone:  { label: '\u{1F50D} Search Zone',    mode: DrawPolygonMode },
+  airRoute:    { label: '\u2708\uFE0F Air Route',    mode: DrawLineStringMode },
+  groundRoute: { label: '\u{1F6E4}\uFE0F Ground Route', mode: DrawLineStringMode },
+  searchPoint: { label: '\u{1F4CD} Search Point',   mode: DrawPointMode },
+  geofence:    { label: '\u{1F6A7} Geofence',        mode: DrawPolygonMode }
 };
 
 // ── Per-feature-type color palette ──
@@ -31,7 +32,8 @@ const MODES = {
 const FEATURE_COLORS = {
   nfz:         { fill: [220, 53, 69, 90],   line: [220, 53, 69, 220]  },
   searchZone:  { fill: [59, 130, 246, 80],  line: [59, 130, 246, 220] },
-  route:       { fill: [16, 185, 129, 80], line: [16, 185, 129, 220]},  // Emerald green
+  airRoute:    { fill: [16, 185, 129, 80],  line: [16, 185, 129, 220] },  // Emerald green
+  groundRoute: { fill: [139, 90, 43, 80],   line: [139, 90, 43, 220] },   // Brown/tan for ground
   searchPoint: { fill: [59, 130, 246, 200], line: [59, 130, 246, 255] },
   geofence:    { fill: [0, 0, 0, 0],        line: [0, 0, 0, 0],        tentativeFill: [255, 165, 0, 60], tentativeLine: [255, 165, 0, 240] }, // Invisible ground, walls rendered separately
   _default:    { fill: [78, 204, 163, 100], line: [78, 204, 163, 220] }
@@ -100,7 +102,8 @@ function MapComponent() {
     geofence: { altitude: 150 },
     nfz: { floor: 0, ceiling: 400 },
     searchZone: { altitude: 100 },
-    route: { altitude: 50 }
+    airRoute: { altitude: 50 },
+    groundRoute: {}  // No altitude - follows terrain
   };
 
   // ── 1. Initialize Interleaved MapLibre + Deck.gl ──
@@ -244,7 +247,7 @@ function MapComponent() {
             setSelectedFeatureIndexes([idx]);
             setActiveMode('modify');
             // Show property panel for features with altitude settings
-            if (feature && ['geofence', 'nfz', 'searchZone', 'route'].includes(feature.properties?.featureType)) {
+            if (feature && ['geofence', 'nfz', 'searchZone', 'airRoute'].includes(feature.properties?.featureType)) {
               setShowPropertyPanel(true);
             }
             return;
@@ -256,7 +259,7 @@ function MapComponent() {
             setSelectedFeatureIndexes([idx]);
             setActiveMode('modify');
             // Show property panel for features with altitude settings
-            if (feature && ['geofence', 'nfz', 'searchZone', 'route'].includes(feature.properties?.featureType)) {
+            if (feature && ['geofence', 'nfz', 'searchZone', 'airRoute'].includes(feature.properties?.featureType)) {
               setShowPropertyPanel(true);
             }
             return;
@@ -427,7 +430,7 @@ function MapComponent() {
           };
           drawJustFinishedRef.current = true;
           // Queue showing property panel for features that have altitude settings
-          if (['geofence', 'nfz', 'searchZone', 'route'].includes(activeMode)) {
+          if (['geofence', 'nfz', 'searchZone', 'airRoute'].includes(activeMode)) {
             setPendingPanelFeatureType(activeMode);
           }
           setGeoJson(finalData);
@@ -438,8 +441,18 @@ function MapComponent() {
         }
       },
 
-      getFillColor: (f) => (FEATURE_COLORS[f?.properties?.featureType] || FEATURE_COLORS._default).fill,
-      getLineColor: (f) => (FEATURE_COLORS[f?.properties?.featureType] || FEATURE_COLORS._default).line,
+      // WHY: Hide route features in EditableGeoJsonLayer since they're rendered by dedicated layers
+      // Routes are still editable/selectable, just visually rendered by PathLayers instead
+      getFillColor: (f) => {
+        const type = f?.properties?.featureType;
+        if (type === 'airRoute' || type === 'groundRoute') return [0, 0, 0, 0];
+        return (FEATURE_COLORS[type] || FEATURE_COLORS._default).fill;
+      },
+      getLineColor: (f) => {
+        const type = f?.properties?.featureType;
+        if (type === 'airRoute' || type === 'groundRoute') return [0, 0, 0, 0];
+        return (FEATURE_COLORS[type] || FEATURE_COLORS._default).line;
+      },
       getLineWidth: 2,
       getPointRadius: 6,
       pointRadiusMinPixels: 4,
@@ -657,23 +670,23 @@ function MapComponent() {
       }
     });
 
-    // Route 3D layer (elevated path)
-    const routeFeatures = dataWithElevation.features.filter(f => f.properties?.featureType === 'route');
-    const routeIndexMap = new Map();
+    // Air Route 3D layer (elevated path)
+    const airRouteFeatures = dataWithElevation.features.filter(f => f.properties?.featureType === 'airRoute');
+    const airRouteIndexMap = new Map();
     dataWithElevation.features.forEach((f, idx) => {
-      if (f.properties?.featureType === 'route') {
-        routeIndexMap.set(f, idx);
+      if (f.properties?.featureType === 'airRoute') {
+        airRouteIndexMap.set(f, idx);
       }
     });
 
-    const routeElevatedData = routeFeatures.map(f => ({
+    const airRouteElevatedData = airRouteFeatures.map(f => ({
       feature: f,
-      featureIndex: routeIndexMap.get(f)
+      featureIndex: airRouteIndexMap.get(f)
     }));
 
-    const routeElevatedLayer = new PathLayer({
-      id: 'route-elevated',
-      data: routeElevatedData,
+    const airRouteElevatedLayer = new PathLayer({
+      id: 'airRoute-elevated',
+      data: airRouteElevatedData,
       getPath: d => {
         const coords = d.feature.geometry.coordinates;
         const altitude = d.feature.properties?.altitude || 50;
@@ -689,8 +702,75 @@ function MapComponent() {
       }
     });
 
+    // Ground Route layer (follows terrain using PathLayer with dense terrain sampling)
+    // WHY: Use PathLayer for consistent screen-space width, but sample terrain at many
+    // points along the path so it follows elevation changes smoothly.
+    const groundRouteFeatures = geoJson.features.filter(f => f.properties?.featureType === 'groundRoute');
+    const groundRouteIndexMap = new Map();
+    geoJson.features.forEach((f, idx) => {
+      if (f.properties?.featureType === 'groundRoute') {
+        groundRouteIndexMap.set(f, idx);
+      }
+    });
+
+    // Helper: interpolate points along a line segment for finer terrain sampling
+    const interpolateSegment = (p1, p2, numPoints) => {
+      const points = [];
+      for (let i = 0; i <= numPoints; i++) {
+        const t = i / numPoints;
+        points.push([
+          p1[0] + (p2[0] - p1[0]) * t,
+          p1[1] + (p2[1] - p1[1]) * t
+        ]);
+      }
+      return points;
+    };
+
+    const INTERPOLATION_POINTS = 15; // points per segment for smooth terrain following
+
+    // Build dense paths with terrain elevations for each ground route
+    const groundRouteData = groundRouteFeatures.map(feature => {
+      const coords = feature.geometry.coordinates;
+      if (!Array.isArray(coords) || coords.length < 2) {
+        return { feature, featureIndex: groundRouteIndexMap.get(feature), densePath: [] };
+      }
+      
+      // Build dense point list with terrain elevations
+      const densePoints = [];
+      for (let i = 0; i < coords.length - 1; i++) {
+        const segmentPoints = interpolateSegment(coords[i], coords[i + 1], INTERPOLATION_POINTS);
+        // Avoid duplicating points at segment boundaries
+        if (i > 0) segmentPoints.shift();
+        segmentPoints.forEach(p => {
+          const elev = getTerrainElevation(p);
+          densePoints.push([p[0], p[1], elev]); // terrain elevation baked in
+        });
+      }
+      
+      return {
+        feature,
+        featureIndex: groundRouteIndexMap.get(feature),
+        densePath: densePoints
+      };
+    });
+
+    const groundRouteLayer = new PathLayer({
+      id: 'groundRoute-path',
+      data: groundRouteData,
+      getPath: d => d.densePath,
+      getColor: [139, 90, 43, 255],  // Brown/tan for ground
+      getWidth: 4,  // Same as air route
+      widthMinPixels: 3,  // Same as air route - constant screen pixels
+      pickable: true,
+      // WHY: depthCompare 'always' renders on top of terrain like a painted overlay
+      parameters: {
+        depthWriteEnabled: false,
+        depthCompare: 'always'
+      }
+    });
+
     overlay.setProps({
-      layers: [curtainLayer, curtainBorderLayer, nfzCeilingLayer, nfzWallLayer, searchZoneCeilingLayer, routeElevatedLayer, editableLayer],
+      layers: [curtainLayer, curtainBorderLayer, nfzCeilingLayer, nfzWallLayer, searchZoneCeilingLayer, airRouteElevatedLayer, groundRouteLayer, editableLayer],
       // WHY: Sync internal deck.gl cursor state with our active mode
       getCursor: () => (activeMode !== 'view' ? (activeMode === 'modify' ? 'grab' : 'crosshair') : 'auto')
     });
@@ -825,7 +905,7 @@ function MapComponent() {
       React.createElement('div', {
         style: { padding: '6px 12px', color: 'rgba(255,255,255,0.5)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }
       }, 'Mission Objects'),
-      ['nfz', 'searchZone', 'geofence', 'route', 'searchPoint'].map((key) =>
+      ['nfz', 'searchZone', 'geofence', 'airRoute', 'groundRoute', 'searchPoint'].map((key) =>
         React.createElement('div', {
           key,
           style: {
@@ -883,14 +963,14 @@ function MapComponent() {
         geofence: '\uD83D\uDEA7 Geofence Properties',
         nfz: '\u26D4 NFZ Properties',
         searchZone: '\uD83D\uDD0D Search Zone Properties',
-        route: '\u2192 Route Properties'
+        airRoute: '\u2708\uFE0F Air Route Properties'
       };
       
       const featureColors = {
         geofence: 'rgba(255, 165, 0, 0.6)',
         nfz: 'rgba(220, 53, 69, 0.6)',
         searchZone: 'rgba(59, 130, 246, 0.6)',
-        route: 'rgba(16, 185, 129, 0.6)'  // Emerald green
+        airRoute: 'rgba(16, 185, 129, 0.6)'  // Emerald green
       };
       
       // Helper to update feature property
@@ -984,8 +1064,8 @@ function MapComponent() {
           )
         ),
         
-        // Geofence, SearchZone, Route: Single altitude
-        ['geofence', 'searchZone', 'route'].includes(featureType) && React.createElement('div', { style: rowStyle },
+        // Geofence, SearchZone, AirRoute: Single altitude
+        ['geofence', 'searchZone', 'airRoute'].includes(featureType) && React.createElement('div', { style: rowStyle },
           React.createElement('span', { style: labelStyle }, 'Altitude'),
           React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
             React.createElement('input', {
