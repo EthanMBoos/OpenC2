@@ -85,6 +85,7 @@ function MapComponent() {
   const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0, lngLat: null });
   const [geofenceAltitude, setGeofenceAltitude] = React.useState(150);
   const [showAltitudeControl, setShowAltitudeControl] = React.useState(false);
+  const [mapIdleToken, setMapIdleToken] = React.useState(0);
 
   // ── 1. Initialize Interleaved MapLibre + Deck.gl ──
   React.useEffect(() => {
@@ -119,6 +120,26 @@ function MapComponent() {
       map.removeControl(deckOverlay);
       deckOverlay.finalize();
       map.remove();
+    };
+  }, []);
+
+  // ── Listen to map idle event for terrain tile loading ──
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const handleIdle = () => {
+      // Only trigger a geometry rebuild if terrain is enabled 
+      // (This prevents unnecessary React updates in flat 2D mode)
+      if (terrainEnabledRef.current) {
+        setMapIdleToken(prev => prev + 1);
+      }
+    };
+
+    map.on('idle', handleIdle);
+
+    return () => {
+      map.off('idle', handleIdle);
     };
   }, []);
 
@@ -502,7 +523,7 @@ function MapComponent() {
       // WHY: Sync internal deck.gl cursor state with our active mode
       getCursor: () => (activeMode !== 'view' ? (activeMode === 'modify' ? 'grab' : 'crosshair') : 'auto')
     });
-  }, [geoJson, activeMode, selectedFeatureIndexes, terrainEnabled, geofenceAltitude]);
+  }, [geoJson, activeMode, selectedFeatureIndexes, terrainEnabled, geofenceAltitude, mapIdleToken]);
 
   // ── 5. Native MapLibre Terrain Helpers ──
   // WHY: We use MapLibre's native terrain instead of deck.gl's TerrainLayer 
