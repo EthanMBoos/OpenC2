@@ -85,8 +85,6 @@ function MapComponent() {
   });
   const [selectedFeatureIndexes, setSelectedFeatureIndexes] = React.useState([]);
   const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0, lngLat: null });
-  const [showPropertyPanel, setShowPropertyPanel] = React.useState(false);
-  const [pendingPanelFeatureType, setPendingPanelFeatureType] = React.useState(null);
   const [mapIdleToken, setMapIdleToken] = React.useState(0);
   const [showMissionFlyout, setShowMissionFlyout] = React.useState(false);
   const [cursorCoords, setCursorCoords] = React.useState(null);
@@ -97,14 +95,6 @@ function MapComponent() {
   const ACCENT_GREEN = '#4ecca3';
   const ACCENT_BLUE = '#3b82f6';
   const TACTICAL_FONT = "'JetBrains Mono', 'Roboto Mono', 'Consolas', monospace";
-
-  // Effect to show property panel after feature creation completes
-  React.useEffect(() => {
-    if (pendingPanelFeatureType && selectedFeatureIndexes.length > 0 && activeMode === 'view') {
-      setShowPropertyPanel(true);
-      setPendingPanelFeatureType(null);
-    }
-  }, [pendingPanelFeatureType, selectedFeatureIndexes, activeMode]);
 
   // Default altitude values for each feature type
   const DEFAULT_ALTITUDES = {
@@ -274,25 +264,17 @@ function MapComponent() {
           // Handle wall segment picks (geofence curtain)
           if (picked.object && picked.object.featureIndex != null) {
             const idx = picked.object.featureIndex;
-            const feature = geoJson.features[idx];
             setSelectedFeatureIndexes([idx]);
             setActiveMode('modify');
-            // Show property panel for features with altitude settings
-            if (feature && ['geofence', 'nfz', 'searchZone', 'airRoute'].includes(feature.properties?.featureType)) {
-              setShowPropertyPanel(true);
-            }
+            setShowMissionFlyout(true);
             return;
           }
           // Handle regular feature picks (EditableGeoJsonLayer)
           if (picked.index != null && picked.index >= 0) {
             const idx = picked.index;
-            const feature = geoJson.features[idx];
             setSelectedFeatureIndexes([idx]);
             setActiveMode('modify');
-            // Show property panel for features with altitude settings
-            if (feature && ['geofence', 'nfz', 'searchZone', 'airRoute'].includes(feature.properties?.featureType)) {
-              setShowPropertyPanel(true);
-            }
+            setShowMissionFlyout(true);
             return;
           }
         }
@@ -302,7 +284,6 @@ function MapComponent() {
       if (activeMode === 'modify') {
         setActiveMode('view');
         setSelectedFeatureIndexes([]);
-        setShowPropertyPanel(false);
         return;
       }
 
@@ -320,15 +301,16 @@ function MapComponent() {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         setMissionMenu((prev) => ({ ...prev, visible: false }));
-        setActiveMode((prev) => (prev !== 'view' ? 'view' : prev));
-        setSelectedFeatureIndexes([]);
-        setShowPropertyPanel(false);
+        if (activeMode !== 'view') {
+          setActiveMode('view');
+          setSelectedFeatureIndexes([]);
+        } else if (showMissionFlyout) {
+          setShowMissionFlyout(false);
+        }
         drawJustFinishedRef.current = false; // Reset so double-click works again
       }
       if (e.key === 'Enter') {
-        if (showPropertyPanel) {
-          setShowPropertyPanel(false);
-        } else if (activeMode === 'modify') {
+        if (activeMode === 'modify') {
           setActiveMode('view');
           setSelectedFeatureIndexes([]);
         }
@@ -341,7 +323,6 @@ function MapComponent() {
         }));
         setSelectedFeatureIndexes([]);
         setActiveMode('view');
-        setShowPropertyPanel(false);
       }
     };
 
@@ -356,7 +337,7 @@ function MapComponent() {
       window.removeEventListener('click', handleClick);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [activeMode, selectedFeatureIndexes, showPropertyPanel, geoJson]);
+  }, [activeMode, selectedFeatureIndexes, showMissionFlyout, geoJson]);
 
   // ── 4. Render Deck.gl Layers ──
   React.useEffect(() => {
@@ -460,13 +441,13 @@ function MapComponent() {
             )
           };
           drawJustFinishedRef.current = true;
-          // Queue showing property panel for features that have altitude settings
-          if (['geofence', 'nfz', 'searchZone', 'airRoute'].includes(activeMode)) {
-            setPendingPanelFeatureType(activeMode);
-          }
           setGeoJson(finalData);
           setActiveMode('view');
           setSelectedFeatureIndexes([lastIdx]);
+          // Auto-open flyout for features with altitude settings
+          if (['geofence', 'nfz', 'searchZone', 'airRoute'].includes(activeMode)) {
+            setShowMissionFlyout(true);
+          }
         } else {
           setGeoJson(cleanData);
         }
@@ -1039,12 +1020,29 @@ function MapComponent() {
         React.createElement('div', {
           style: { color: ACCENT_GREEN, marginBottom: '12px', fontWeight: 600, fontSize: '11px', letterSpacing: '1px' }
         }, '> MISSION_ELEMENTS'),
+        
+        // Drawing mode indicator
+        activeMode !== 'view' && activeMode !== 'modify' && React.createElement('div', {
+          style: {
+            padding: '10px 12px',
+            marginBottom: '12px',
+            background: 'rgba(78, 204, 163, 0.1)',
+            border: `1px dashed ${ACCENT_GREEN}`,
+            borderRadius: '2px',
+            fontSize: '10px',
+            color: ACCENT_GREEN,
+            textAlign: 'center',
+            letterSpacing: '0.5px'
+          }
+        }, `DRAWING: ${activeMode.toUpperCase()}`),
+        
         geoJson.features.length === 0
           ? React.createElement('div', {
               style: { color: '#555', fontSize: '11px', padding: '8px 0' }
             }, 'No elements. Double-click map to add.')
           : geoJson.features.map((f, i) => {
               const isSelected = selectedFeatureIndexes.includes(i);
+              const featureType = f.properties?.featureType;
               const typeColors = {
                 nfz: '#dc3545',
                 searchZone: '#3b82f6',
@@ -1053,28 +1051,194 @@ function MapComponent() {
                 groundRoute: '#8b5a2b',
                 searchPoint: '#3b82f6'
               };
-              return React.createElement('div', {
-                key: i,
-                style: {
-                  padding: '8px 10px',
-                  marginBottom: '4px',
-                  background: isSelected ? 'rgba(78, 204, 163, 0.15)' : 'transparent',
-                  borderLeft: `2px solid ${typeColors[f.properties?.featureType] || '#4ecca3'}`,
-                  fontSize: '11px',
-                  color: isSelected ? '#fff' : '#aaa',
-                  cursor: 'pointer',
-                  transition: 'all 0.1s'
-                },
-                onMouseEnter: (e) => { if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; },
-                onMouseLeave: (e) => { if (!isSelected) e.currentTarget.style.background = 'transparent'; },
-                onClick: () => {
-                  setSelectedFeatureIndexes([i]);
-                  setActiveMode('modify');
-                  if (['geofence', 'nfz', 'searchZone', 'airRoute'].includes(f.properties?.featureType)) {
-                    setShowPropertyPanel(true);
+              const featureColor = typeColors[featureType] || '#4ecca3';
+              
+              // Helper to update feature property
+              const updateFeatureProperty = (propName, value) => {
+                setGeoJson(prev => ({
+                  ...prev,
+                  features: prev.features.map((feat, idx) =>
+                    idx === i
+                      ? { ...feat, properties: { ...feat.properties, [propName]: Number(value) } }
+                      : feat
+                  )
+                }));
+              };
+              
+              // Inline input style
+              const inlineInputStyle = {
+                width: '60px',
+                padding: '4px 6px',
+                borderRadius: '2px',
+                border: '1px solid rgba(255,255,255,0.2)',
+                background: 'rgba(0,0,0,0.3)',
+                color: '#ccc',
+                fontSize: '11px',
+                textAlign: 'center',
+                fontFamily: TACTICAL_FONT
+              };
+              
+              return React.createElement('div', { key: i },
+                // Element row
+                React.createElement('div', {
+                  style: {
+                    padding: '8px 10px',
+                    marginBottom: isSelected ? '0' : '4px',
+                    background: isSelected ? 'rgba(78, 204, 163, 0.15)' : 'transparent',
+                    borderLeft: `2px solid ${featureColor}`,
+                    fontSize: '11px',
+                    color: isSelected ? '#fff' : '#aaa',
+                    cursor: 'pointer',
+                    transition: 'all 0.1s',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                  },
+                  onMouseEnter: (e) => { if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; },
+                  onMouseLeave: (e) => { if (!isSelected) e.currentTarget.style.background = 'transparent'; },
+                  onClick: () => {
+                    if (isSelected) {
+                      // Deselect
+                      setSelectedFeatureIndexes([]);
+                      setActiveMode('view');
+                    } else {
+                      setSelectedFeatureIndexes([i]);
+                      setActiveMode('modify');
+                    }
                   }
-                }
-              }, `[${String(i).padStart(2, '0')}] ${(f.properties?.featureType || 'unknown').toUpperCase()}`);
+                }, 
+                  `[${String(i).padStart(2, '0')}] ${(featureType || 'unknown').toUpperCase()}`,
+                  isSelected && React.createElement('span', { style: { fontSize: '9px', color: '#666' } }, '\u25BC')
+                ),
+                
+                // Expanded inline property editor (when selected)
+                isSelected && ['geofence', 'nfz', 'searchZone', 'airRoute'].includes(featureType) && React.createElement('div', {
+                  style: {
+                    padding: '12px 10px',
+                    marginBottom: '4px',
+                    marginLeft: '2px',
+                    borderLeft: `2px solid ${featureColor}`,
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    fontSize: '10px'
+                  },
+                  onClick: (e) => e.stopPropagation()
+                },
+                  // NFZ: Floor and Ceiling
+                  featureType === 'nfz' && React.createElement('div', null,
+                    React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' } },
+                      React.createElement('span', { style: { color: '#888' } }, 'Floor'),
+                      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '4px' } },
+                        React.createElement('input', {
+                          type: 'number',
+                          value: f.properties?.floor ?? 0,
+                          onChange: (e) => updateFeatureProperty('floor', e.target.value),
+                          onKeyDown: (e) => e.stopPropagation(),
+                          style: inlineInputStyle
+                        }),
+                        React.createElement('span', { style: { color: '#555', fontSize: '9px' } }, 'm')
+                      )
+                    ),
+                    React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' } },
+                      React.createElement('span', { style: { color: '#888' } }, 'Ceiling'),
+                      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '4px' } },
+                        React.createElement('input', {
+                          type: 'number',
+                          value: f.properties?.ceiling ?? 400,
+                          onChange: (e) => updateFeatureProperty('ceiling', e.target.value),
+                          onKeyDown: (e) => e.stopPropagation(),
+                          style: inlineInputStyle
+                        }),
+                        React.createElement('span', { style: { color: '#555', fontSize: '9px' } }, 'm')
+                      )
+                    )
+                  ),
+                  
+                  // Geofence, SearchZone, AirRoute: Single altitude
+                  ['geofence', 'searchZone', 'airRoute'].includes(featureType) && React.createElement('div', {
+                    style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }
+                  },
+                    React.createElement('span', { style: { color: '#888' } }, 'Altitude'),
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '4px' } },
+                      React.createElement('input', {
+                        type: 'number',
+                        value: f.properties?.altitude ?? (featureType === 'geofence' ? 150 : featureType === 'searchZone' ? 100 : 50),
+                        onChange: (e) => updateFeatureProperty('altitude', e.target.value),
+                        onKeyDown: (e) => e.stopPropagation(),
+                        style: inlineInputStyle
+                      }),
+                      React.createElement('span', { style: { color: '#555', fontSize: '9px' } }, 'm')
+                    )
+                  ),
+                  
+                  // Delete button
+                  React.createElement('button', {
+                    style: {
+                      width: '100%',
+                      marginTop: '8px',
+                      padding: '6px 10px',
+                      borderRadius: '2px',
+                      border: '1px solid rgba(220, 53, 69, 0.5)',
+                      background: 'transparent',
+                      color: '#dc3545',
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      fontFamily: TACTICAL_FONT,
+                      cursor: 'pointer',
+                      letterSpacing: '0.5px',
+                      transition: 'all 0.1s'
+                    },
+                    onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(220, 53, 69, 0.2)'; },
+                    onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
+                    onClick: () => {
+                      setGeoJson(prev => ({
+                        ...prev,
+                        features: prev.features.filter((_, idx) => idx !== i)
+                      }));
+                      setSelectedFeatureIndexes([]);
+                      setActiveMode('view');
+                    }
+                  }, 'DELETE')
+                ),
+                
+                // For elements without altitude (groundRoute, searchPoint), show just delete
+                isSelected && !['geofence', 'nfz', 'searchZone', 'airRoute'].includes(featureType) && React.createElement('div', {
+                  style: {
+                    padding: '10px',
+                    marginBottom: '4px',
+                    marginLeft: '2px',
+                    borderLeft: `2px solid ${featureColor}`,
+                    background: 'rgba(0, 0, 0, 0.3)'
+                  },
+                  onClick: (e) => e.stopPropagation()
+                },
+                  React.createElement('button', {
+                    style: {
+                      width: '100%',
+                      padding: '6px 10px',
+                      borderRadius: '2px',
+                      border: '1px solid rgba(220, 53, 69, 0.5)',
+                      background: 'transparent',
+                      color: '#dc3545',
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      fontFamily: TACTICAL_FONT,
+                      cursor: 'pointer',
+                      letterSpacing: '0.5px',
+                      transition: 'all 0.1s'
+                    },
+                    onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(220, 53, 69, 0.2)'; },
+                    onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
+                    onClick: () => {
+                      setGeoJson(prev => ({
+                        ...prev,
+                        features: prev.features.filter((_, idx) => idx !== i)
+                      }));
+                      setSelectedFeatureIndexes([]);
+                      setActiveMode('view');
+                    }
+                  }, 'DELETE')
+                )
+              );
             })
       ),
     
@@ -1148,184 +1312,16 @@ function MapComponent() {
               }));
               setSelectedFeatureIndexes([geoJson.features.length]);
               setActiveMode('view');
+              setShowMissionFlyout(true);
             } else {
               setActiveMode(key);
               setSelectedFeatureIndexes([]);
+              setShowMissionFlyout(true);
             }
           }
         }, MODES[key].label);
       })
-    ),
-    // Property Side-Panel
-    showPropertyPanel && selectedFeatureIndexes.length > 0 && (() => {
-      const featureIdx = selectedFeatureIndexes[0];
-      const feature = geoJson.features[featureIdx];
-      if (!feature) return null;
-      
-      const featureType = feature.properties?.featureType;
-      const featureLabels = {
-        geofence: '\uD83D\uDEA7 Geofence Properties',
-        nfz: '\u26D4 NFZ Properties',
-        searchZone: '\uD83D\uDD0D Search Zone Properties',
-        airRoute: '\u2708\uFE0F Air Route Properties'
-      };
-      
-      const featureColors = {
-        geofence: 'rgba(255, 165, 0, 0.6)',
-        nfz: 'rgba(220, 53, 69, 0.6)',
-        searchZone: 'rgba(59, 130, 246, 0.6)',
-        airRoute: 'rgba(16, 185, 129, 0.6)'  // Emerald green
-      };
-      
-      // Helper to update feature property
-      const updateFeatureProperty = (propName, value) => {
-        setGeoJson(prev => ({
-          ...prev,
-          features: prev.features.map((f, i) =>
-            i === featureIdx
-              ? { ...f, properties: { ...f.properties, [propName]: Number(value) } }
-              : f
-          )
-        }));
-      };
-      
-      const inputStyle = {
-        width: '70px',
-        padding: '6px 10px',
-        borderRadius: '2px',
-        border: '1px solid rgba(255,255,255,0.3)',
-        background: 'rgba(0,0,0,0.4)',
-        color: '#ccc',
-        fontSize: '13px',
-        textAlign: 'center',
-        fontFamily: TACTICAL_FONT
-      };
-      
-      const rowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' };
-      const labelStyle = { color: '#888', fontSize: '11px', letterSpacing: '0.5px' };
-      
-      return React.createElement('div', {
-        style: {
-          position: 'absolute',
-          right: showMissionFlyout ? '276px' : '16px',
-          top: '50%',
-          transform: 'translateY(-50%)',
-          width: '200px',
-          zIndex: 10,
-          background: 'rgba(10, 10, 12, 0.95)',
-          border: `1px solid ${featureColors[featureType] || ACCENT_GREEN}`,
-          borderRadius: '2px',
-          padding: '16px',
-          boxShadow: '-4px 0 20px rgba(0,0,0,0.5)',
-          backdropFilter: 'blur(10px)',
-          fontFamily: TACTICAL_FONT,
-          fontSize: '12px',
-          color: '#ccc',
-          display: 'flex',
-          flexDirection: 'column'
-        },
-        onClick: (e) => e.stopPropagation()
-      },
-        // Header
-        React.createElement('div', {
-          style: { marginBottom: '14px', fontWeight: 600, color: featureColors[featureType] || ACCENT_GREEN, fontSize: '10px', letterSpacing: '1px', textTransform: 'uppercase' }
-        }, '> ' + (featureType || 'PROPS').toUpperCase() + '_CFG'),
-        
-        // NFZ: Floor and Ceiling
-        featureType === 'nfz' && React.createElement('div', null,
-          React.createElement('div', { style: rowStyle },
-            React.createElement('span', { style: labelStyle }, 'Floor Altitude'),
-            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-              React.createElement('input', {
-                type: 'number',
-                value: feature.properties?.floor ?? 0,
-                autoFocus: true,
-                onChange: (e) => updateFeatureProperty('floor', e.target.value),
-                onKeyDown: (e) => {
-                  if (e.key === 'Enter') { e.preventDefault(); setShowPropertyPanel(false); }
-                  if (e.key === 'Escape') { e.preventDefault(); setShowPropertyPanel(false); }
-                  e.stopPropagation();
-                },
-                style: inputStyle
-              }),
-              React.createElement('span', { style: { color: 'rgba(255,255,255,0.5)' } }, 'm')
-            )
-          ),
-          React.createElement('div', { style: rowStyle },
-            React.createElement('span', { style: labelStyle }, 'Ceiling Altitude'),
-            React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-              React.createElement('input', {
-                type: 'number',
-                value: feature.properties?.ceiling ?? 400,
-                onChange: (e) => updateFeatureProperty('ceiling', e.target.value),
-                onKeyDown: (e) => {
-                  if (e.key === 'Enter') { e.preventDefault(); setShowPropertyPanel(false); }
-                  if (e.key === 'Escape') { e.preventDefault(); setShowPropertyPanel(false); }
-                  e.stopPropagation();
-                },
-                style: inputStyle
-              }),
-              React.createElement('span', { style: { color: 'rgba(255,255,255,0.5)' } }, 'm')
-            )
-          )
-        ),
-        
-        // Geofence, SearchZone, AirRoute: Single altitude
-        ['geofence', 'searchZone', 'airRoute'].includes(featureType) && React.createElement('div', { style: rowStyle },
-          React.createElement('span', { style: labelStyle }, 'Altitude'),
-          React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } },
-            React.createElement('input', {
-              type: 'number',
-              value: feature.properties?.altitude ?? (featureType === 'geofence' ? 150 : featureType === 'searchZone' ? 100 : 50),
-              autoFocus: true,
-              onChange: (e) => updateFeatureProperty('altitude', e.target.value),
-              onKeyDown: (e) => {
-                if (e.key === 'Enter') { e.preventDefault(); setShowPropertyPanel(false); }
-                if (e.key === 'Escape') { e.preventDefault(); setShowPropertyPanel(false); }
-                e.stopPropagation();
-              },
-              style: inputStyle
-            }),
-            React.createElement('span', { style: { color: 'rgba(255,255,255,0.5)' } }, 'm')
-          )
-        ),
-        
-        // Spacer
-        React.createElement('div', { style: { flex: 1 } }),
-        
-        // Footer hint
-        React.createElement('div', { 
-          style: { fontSize: '9px', color: '#555', borderTop: '1px solid #333', paddingTop: '10px', marginTop: '8px' } 
-        }, 'ENTER: confirm | ESC: close'),
-        
-        // Done button
-        React.createElement('button', {
-          style: {
-            marginTop: '10px',
-            padding: '8px 16px',
-            borderRadius: '2px',
-            border: `1px solid ${featureColors[featureType] || ACCENT_GREEN}`,
-            background: 'transparent',
-            color: featureColors[featureType] || ACCENT_GREEN,
-            fontSize: '11px',
-            fontWeight: 600,
-            fontFamily: TACTICAL_FONT,
-            cursor: 'pointer',
-            letterSpacing: '0.5px',
-            transition: 'all 0.1s'
-          },
-          onMouseEnter: (e) => {
-            e.currentTarget.style.background = featureColors[featureType] || ACCENT_GREEN;
-            e.currentTarget.style.color = '#000';
-          },
-          onMouseLeave: (e) => {
-            e.currentTarget.style.background = 'transparent';
-            e.currentTarget.style.color = featureColors[featureType] || ACCENT_GREEN;
-          },
-          onClick: () => setShowPropertyPanel(false)
-        }, 'CONFIRM')
-      );
-    })()
+    )
     ), // End mapViewportStyle div
 
     // ── BOTTOM STATUS BAR (DEK) ──
