@@ -88,6 +88,15 @@ function MapComponent() {
   const [showPropertyPanel, setShowPropertyPanel] = React.useState(false);
   const [pendingPanelFeatureType, setPendingPanelFeatureType] = React.useState(null);
   const [mapIdleToken, setMapIdleToken] = React.useState(0);
+  const [showMissionFlyout, setShowMissionFlyout] = React.useState(false);
+  const [cursorCoords, setCursorCoords] = React.useState(null);
+
+  // ── Tactical Style Constants ──
+  const FRAME_WIDTH = '24px'; // ~0.6cm - standard tactical frame
+  const TACTICAL_BG = '#0a0a0c';
+  const ACCENT_GREEN = '#4ecca3';
+  const ACCENT_BLUE = '#3b82f6';
+  const TACTICAL_FONT = "'JetBrains Mono', 'Roboto Mono', 'Consolas', monospace";
 
   // Effect to show property panel after feature creation completes
   React.useEffect(() => {
@@ -159,6 +168,28 @@ function MapComponent() {
 
     return () => {
       map.off('idle', handleIdle);
+    };
+  }, []);
+
+  // ── Track cursor coordinates ──
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const handleMouseMove = (e) => {
+      setCursorCoords({ lng: e.lngLat.lng, lat: e.lngLat.lat });
+    };
+
+    const handleMouseLeave = () => {
+      setCursorCoords(null);
+    };
+
+    map.on('mousemove', handleMouseMove);
+    map.on('mouseout', handleMouseLeave);
+
+    return () => {
+      map.off('mousemove', handleMouseMove);
+      map.off('mouseout', handleMouseLeave);
     };
   }, []);
 
@@ -854,71 +885,252 @@ function MapComponent() {
     });
   }, [satelliteEnabled]);
 
-  // ── Styles ──
-  const btnBaseStyle = {
-    position: 'absolute',
-    right: '10px',
-    zIndex: 2,
+  // ── Tactical Styles ──
+  const frameStyle = {
+    position: 'relative',
+    width: '100%',
+    height: '100%',
+    backgroundColor: TACTICAL_BG,
+    padding: FRAME_WIDTH,
+    boxSizing: 'border-box',
     display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    color: '#fff',
-    borderRadius: '6px',
-    padding: '6px 12px',
-    cursor: 'pointer',
-    fontSize: '13px',
-    fontFamily: 'sans-serif',
-    fontWeight: 500,
-    backdropFilter: 'blur(4px)',
-    transition: 'background 0.2s, border 0.2s'
+    flexDirection: 'column',
+    overflow: 'hidden',
+    fontFamily: TACTICAL_FONT
   };
 
-  return React.createElement('div', {
-    style: { position: 'relative', width: '100%', height: '600px', marginTop: '1rem' }
-  },
-    // The unified Map container (Only one canvas!)
-    React.createElement('div', {
-      id: 'map',
-      ref: mapContainerRef,
-      style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }
-    }),
+  const mapViewportStyle = {
+    position: 'relative',
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    overflow: 'hidden',
+    border: '1px solid #333'
+  };
+
+  const toolbarStyle = {
+    position: 'absolute',
+    right: '12px',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '10px',
+    zIndex: 5
+  };
+
+  const iconBtnStyle = (active, color = ACCENT_GREEN) => ({
+    width: '36px',
+    height: '36px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: active ? color : 'rgba(10, 10, 12, 0.85)',
+    border: `1px solid ${active ? color : '#444'}`,
+    color: active ? '#000' : '#ccc',
+    cursor: 'pointer',
+    fontSize: '11px',
+    fontWeight: 600,
+    fontFamily: TACTICAL_FONT,
+    borderRadius: '2px',
+    transition: 'all 0.1s ease'
+  });
+
+  const bottomDekStyle = {
+    position: 'absolute',
+    bottom: '4px',
+    left: FRAME_WIDTH,
+    right: FRAME_WIDTH,
+    height: '16px',
+    fontSize: '9px',
+    color: '#555',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '0 8px',
+    fontFamily: TACTICAL_FONT,
+    letterSpacing: '0.5px'
+  };
+
+  // Mode border color for active drawing states
+  const getModeAccent = () => {
+    if (activeMode === 'nfz') return 'rgba(220, 53, 69, 0.6)';
+    if (activeMode === 'geofence') return 'rgba(255, 165, 0, 0.6)';
+    if (activeMode === 'searchZone') return 'rgba(59, 130, 246, 0.6)';
+    if (activeMode === 'airRoute' || activeMode === 'groundRoute') return 'rgba(16, 185, 129, 0.6)';
+    if (activeMode === 'modify') return 'rgba(255, 255, 255, 0.3)';
+    return '#333';
+  };
+
+  return React.createElement('div', { style: frameStyle },
+    // ── TOP HEADER BAR (absolute positioned in frame gutter) ──
+    React.createElement('div', { 
+      style: { 
+        position: 'absolute',
+        top: '4px',
+        left: FRAME_WIDTH,
+        right: FRAME_WIDTH,
+        height: '16px', 
+        fontSize: '10px', 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'space-between',
+        padding: '0 4px',
+        fontFamily: TACTICAL_FONT,
+        letterSpacing: '1px',
+        zIndex: 1
+      } 
+    },
+      React.createElement('span', { style: { color: ACCENT_GREEN, fontWeight: 600 } }, 'OPENC2'),
+      React.createElement('span', { style: { color: '#444' } }, 'C2 INTERFACE v1.0')
+    ),
+    // ── MAP VIEWPORT ──
+    React.createElement('div', { style: { ...mapViewportStyle, borderColor: getModeAccent() } },
+      // The unified Map container
+      React.createElement('div', {
+        id: 'map',
+        ref: mapContainerRef,
+        style: { width: '100%', height: '100%' }
+      }),
+
+      // ── RIGHT GUTTER TOOLBAR ──
+      React.createElement('div', { style: toolbarStyle },
+        // Mission Flyout Toggle
+        React.createElement('button', {
+          style: iconBtnStyle(showMissionFlyout, ACCENT_GREEN),
+          onClick: () => setShowMissionFlyout(!showMissionFlyout),
+          title: 'Mission Elements'
+        }, '\u2630'),
+        
+        // Terrain Toggle
+        React.createElement('button', {
+          style: iconBtnStyle(terrainEnabled, ACCENT_GREEN),
+          onClick: () => setTerrainEnabled(!terrainEnabled),
+          title: terrainEnabled ? 'Disable 3D Terrain' : 'Enable 3D Terrain'
+        }, terrainEnabled ? '3D' : '2D'),
+        
+        // Satellite Toggle
+        React.createElement('button', {
+          style: iconBtnStyle(satelliteEnabled, ACCENT_BLUE),
+          onClick: () => setSatelliteEnabled(!satelliteEnabled),
+          title: satelliteEnabled ? 'Switch to Street Map' : 'Switch to Satellite'
+        }, 'SAT')
+      ),
+
+      // ── MISSION FLYOUT (Right side panel) ──
+      showMissionFlyout && React.createElement('div', {
+        style: {
+          position: 'absolute',
+          right: '56px',
+          top: 0,
+          bottom: 0,
+          width: '260px',
+          background: 'rgba(10, 10, 12, 0.95)',
+          borderLeft: `1px solid ${ACCENT_GREEN}`,
+          zIndex: 4,
+          padding: '16px',
+          backdropFilter: 'blur(10px)',
+          fontFamily: TACTICAL_FONT,
+          overflowY: 'auto'
+        },
+        onClick: (e) => e.stopPropagation()
+      },
+        React.createElement('div', {
+          style: { color: ACCENT_GREEN, marginBottom: '12px', fontWeight: 600, fontSize: '11px', letterSpacing: '1px' }
+        }, '> MISSION_ELEMENTS'),
+        geoJson.features.length === 0
+          ? React.createElement('div', {
+              style: { color: '#555', fontSize: '11px', padding: '8px 0' }
+            }, 'No elements. Double-click map to add.')
+          : geoJson.features.map((f, i) => {
+              const isSelected = selectedFeatureIndexes.includes(i);
+              const typeColors = {
+                nfz: '#dc3545',
+                searchZone: '#3b82f6',
+                geofence: '#ffa500',
+                airRoute: '#10b981',
+                groundRoute: '#8b5a2b',
+                searchPoint: '#3b82f6'
+              };
+              return React.createElement('div', {
+                key: i,
+                style: {
+                  padding: '8px 10px',
+                  marginBottom: '4px',
+                  background: isSelected ? 'rgba(78, 204, 163, 0.15)' : 'transparent',
+                  borderLeft: `2px solid ${typeColors[f.properties?.featureType] || '#4ecca3'}`,
+                  fontSize: '11px',
+                  color: isSelected ? '#fff' : '#aaa',
+                  cursor: 'pointer',
+                  transition: 'all 0.1s'
+                },
+                onMouseEnter: (e) => { if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; },
+                onMouseLeave: (e) => { if (!isSelected) e.currentTarget.style.background = 'transparent'; },
+                onClick: () => {
+                  setSelectedFeatureIndexes([i]);
+                  setActiveMode('modify');
+                  if (['geofence', 'nfz', 'searchZone', 'airRoute'].includes(f.properties?.featureType)) {
+                    setShowPropertyPanel(true);
+                  }
+                }
+              }, `[${String(i).padStart(2, '0')}] ${(f.properties?.featureType || 'unknown').toUpperCase()}`);
+            })
+      ),
     
-    // Mission editor menu
+    // Mission editor menu (context menu on double-click)
     missionMenu.visible && React.createElement('div', {
       style: {
         position: 'fixed',
         top: missionMenu.y,
         left: missionMenu.x,
         zIndex: 10,
-        background: 'rgba(26, 26, 46, 0.95)',
-        border: '1px solid rgba(255,255,255,0.2)',
-        borderRadius: '8px',
+        background: 'rgba(10, 10, 12, 0.95)',
+        border: `1px solid ${ACCENT_GREEN}`,
+        borderRadius: '2px',
         padding: '4px 0',
-        minWidth: '160px',
-        boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
-        backdropFilter: 'blur(8px)',
-        fontFamily: 'sans-serif',
-        fontSize: '13px'
+        minWidth: '180px',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
+        backdropFilter: 'blur(10px)',
+        fontFamily: TACTICAL_FONT,
+        fontSize: '12px'
       },
       onClick: (e) => e.stopPropagation()
     },
       React.createElement('div', {
-        style: { padding: '6px 12px', color: 'rgba(255,255,255,0.5)', fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }
-      }, 'Mission Objects'),
-      ['nfz', 'searchZone', 'geofence', 'airRoute', 'groundRoute', 'searchPoint'].map((key) =>
-        React.createElement('div', {
+        style: { padding: '6px 12px', color: ACCENT_GREEN, fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }
+      }, '> ADD_ELEMENT'),
+      ['nfz', 'searchZone', 'geofence', 'airRoute', 'groundRoute', 'searchPoint'].map((key) => {
+        const menuColors = {
+          nfz: '#dc3545',
+          searchZone: '#3b82f6',
+          geofence: '#ffa500',
+          airRoute: '#10b981',
+          groundRoute: '#8b5a2b',
+          searchPoint: '#3b82f6'
+        };
+        return React.createElement('div', {
           key,
           style: {
             padding: '8px 14px',
-            color: '#fff',
+            color: '#ccc',
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
-            gap: '8px',
-            transition: 'background 0.15s'
+            gap: '10px',
+            transition: 'all 0.1s',
+            borderLeft: '2px solid transparent',
+            fontFamily: TACTICAL_FONT
           },
-          onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(78, 204, 163, 0.3)'; },
-          onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
+          onMouseEnter: (e) => { 
+            e.currentTarget.style.background = 'rgba(78, 204, 163, 0.15)'; 
+            e.currentTarget.style.borderLeftColor = menuColors[key];
+            e.currentTarget.style.color = '#fff';
+          },
+          onMouseLeave: (e) => { 
+            e.currentTarget.style.background = 'transparent'; 
+            e.currentTarget.style.borderLeftColor = 'transparent';
+            e.currentTarget.style.color = '#ccc';
+          },
           onClick: () => {
             const clickLngLat = missionMenu.lngLat;
             setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null });
@@ -940,18 +1152,9 @@ function MapComponent() {
               setSelectedFeatureIndexes([]);
             }
           }
-        }, MODES[key].label)
-      )
+        }, MODES[key].label);
+      })
     ),
-    // Terrain toggle
-    React.createElement('button', {
-      style: { ...btnBaseStyle, top: '10px', 
-        background: terrainEnabled ? 'rgba(78, 204, 163, 0.9)' : 'rgba(26, 26, 46, 0.85)',
-        border: terrainEnabled ? '1px solid #4ecca3' : '1px solid rgba(255,255,255,0.25)'
-      },
-      onClick: function () { setTerrainEnabled(!terrainEnabled); },
-      title: terrainEnabled ? 'Disable 3D Terrain' : 'Enable 3D Terrain'
-    }, terrainEnabled ? '\uD83C\uDF0D 3D' : '\uD83D\uDDFA\uFE0F 2D'),
     // Property Side-Panel
     showPropertyPanel && selectedFeatureIndexes.length > 0 && (() => {
       const featureIdx = selectedFeatureIndexes[0];
@@ -988,33 +1191,35 @@ function MapComponent() {
       const inputStyle = {
         width: '70px',
         padding: '6px 10px',
-        borderRadius: '4px',
+        borderRadius: '2px',
         border: '1px solid rgba(255,255,255,0.3)',
-        background: 'rgba(0,0,0,0.3)',
-        color: '#fff',
-        fontSize: '14px',
-        textAlign: 'center'
+        background: 'rgba(0,0,0,0.4)',
+        color: '#ccc',
+        fontSize: '13px',
+        textAlign: 'center',
+        fontFamily: TACTICAL_FONT
       };
       
-      const rowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' };
-      const labelStyle = { color: 'rgba(255,255,255,0.8)', fontSize: '13px' };
+      const rowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' };
+      const labelStyle = { color: '#888', fontSize: '11px', letterSpacing: '0.5px' };
       
       return React.createElement('div', {
         style: {
           position: 'absolute',
-          right: 0,
-          top: 0,
-          bottom: 0,
-          width: '220px',
+          right: showMissionFlyout ? '316px' : '56px',
+          top: '50%',
+          transform: 'translateY(-50%)',
+          width: '200px',
           zIndex: 10,
-          background: 'rgba(26, 26, 46, 0.95)',
-          borderLeft: `2px solid ${featureColors[featureType] || 'rgba(78, 204, 163, 0.6)'}`,
+          background: 'rgba(10, 10, 12, 0.95)',
+          border: `1px solid ${featureColors[featureType] || ACCENT_GREEN}`,
+          borderRadius: '2px',
           padding: '16px',
-          boxShadow: '-4px 0 16px rgba(0,0,0,0.4)',
-          backdropFilter: 'blur(8px)',
-          fontFamily: 'sans-serif',
-          fontSize: '13px',
-          color: '#fff',
+          boxShadow: '-4px 0 20px rgba(0,0,0,0.5)',
+          backdropFilter: 'blur(10px)',
+          fontFamily: TACTICAL_FONT,
+          fontSize: '12px',
+          color: '#ccc',
           display: 'flex',
           flexDirection: 'column'
         },
@@ -1022,8 +1227,8 @@ function MapComponent() {
       },
         // Header
         React.createElement('div', {
-          style: { marginBottom: '16px', fontWeight: 600, color: featureColors[featureType] || 'rgba(78, 204, 163, 0.9)', fontSize: '14px' }
-        }, featureLabels[featureType] || 'Properties'),
+          style: { marginBottom: '14px', fontWeight: 600, color: featureColors[featureType] || ACCENT_GREEN, fontSize: '10px', letterSpacing: '1px', textTransform: 'uppercase' }
+        }, '> ' + (featureType || 'PROPS').toUpperCase() + '_CFG'),
         
         // NFZ: Floor and Ceiling
         featureType === 'nfz' && React.createElement('div', null,
@@ -1087,44 +1292,64 @@ function MapComponent() {
         // Spacer
         React.createElement('div', { style: { flex: 1 } }),
         
-        // Footer
-        React.createElement('div', { style: { fontSize: '11px', color: 'rgba(255,255,255,0.4)', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '12px' } },
-          'Press Enter to confirm, Esc to close'
-        ),
+        // Footer hint
+        React.createElement('div', { 
+          style: { fontSize: '9px', color: '#555', borderTop: '1px solid #333', paddingTop: '10px', marginTop: '8px' } 
+        }, 'ENTER: confirm | ESC: close'),
         
         // Done button
         React.createElement('button', {
           style: {
-            marginTop: '8px',
+            marginTop: '10px',
             padding: '8px 16px',
-            borderRadius: '6px',
-            border: 'none',
-            background: featureColors[featureType] || 'rgba(78, 204, 163, 0.9)',
-            color: '#fff',
-            fontSize: '13px',
-            fontWeight: 500,
-            cursor: 'pointer'
+            borderRadius: '2px',
+            border: `1px solid ${featureColors[featureType] || ACCENT_GREEN}`,
+            background: 'transparent',
+            color: featureColors[featureType] || ACCENT_GREEN,
+            fontSize: '11px',
+            fontWeight: 600,
+            fontFamily: TACTICAL_FONT,
+            cursor: 'pointer',
+            letterSpacing: '0.5px',
+            transition: 'all 0.1s'
+          },
+          onMouseEnter: (e) => {
+            e.currentTarget.style.background = featureColors[featureType] || ACCENT_GREEN;
+            e.currentTarget.style.color = '#000';
+          },
+          onMouseLeave: (e) => {
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.color = featureColors[featureType] || ACCENT_GREEN;
           },
           onClick: () => setShowPropertyPanel(false)
-        }, 'Done')
+        }, 'CONFIRM')
       );
-    })(),
-    // Satellite toggle
-    React.createElement('button', {
-      style: { ...btnBaseStyle, top: '50px',
-        background: satelliteEnabled ? 'rgba(59, 130, 246, 0.9)' : 'rgba(26, 26, 46, 0.85)',
-        border: satelliteEnabled ? '1px solid #3b82f6' : '1px solid rgba(255,255,255,0.25)'
-      },
-      onClick: function () { setSatelliteEnabled(!satelliteEnabled); },
-      title: satelliteEnabled ? 'Switch to Street Map' : 'Switch to Satellite'
-    }, satelliteEnabled ? '\uD83D\uDEF0\uFE0F Street' : '\uD83D\uDEF0\uFE0F Satellite')
+    })()
+    ), // End mapViewportStyle div
+
+    // ── BOTTOM STATUS BAR (DEK) ──
+    React.createElement('div', { style: bottomDekStyle },
+      React.createElement('span', null, `ELEMENTS: ${geoJson.features.length} | MODE: ${activeMode.toUpperCase()}`),
+      React.createElement('span', { style: { color: '#888' } }, 
+        cursorCoords 
+          ? `${cursorCoords.lat.toFixed(6)}, ${cursorCoords.lng.toFixed(6)}`
+          : '--.--, --.--'
+      )
+    )
   );
 }
 
 function App() {
-  return React.createElement('div', { style: { padding: '2rem', fontFamily: 'sans-serif' } },
-    React.createElement('h1', null, 'OpenC2'),
-    React.createElement('p', null, 'Initial window - map will be inserted here'),
+  return React.createElement('div', { 
+    style: { 
+      fontFamily: "'JetBrains Mono', 'Roboto Mono', 'Consolas', monospace",
+      background: '#0a0a0c',
+      width: '100vw',
+      height: '100vh',
+      boxSizing: 'border-box',
+      overflow: 'hidden'
+    } 
+  },
     React.createElement(MapComponent)
   );
 }
