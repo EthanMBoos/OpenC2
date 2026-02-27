@@ -89,12 +89,12 @@ function MapComponent() {
   const [showMissionFlyout, setShowMissionFlyout] = React.useState(false);
   const [cursorCoords, setCursorCoords] = React.useState(null);
 
-  // ── Tactical Style Constants ──
-  const FRAME_WIDTH = '24px'; // ~0.6cm - standard tactical frame
-  const TACTICAL_BG = '#0a0a0c';
-  const ACCENT_GREEN = '#4ecca3';
-  const ACCENT_BLUE = '#3b82f6';
-  const TACTICAL_FONT = "'JetBrains Mono', 'Roboto Mono', 'Consolas', monospace";
+  // ── Style Constants ──
+  const FRAME_WIDTH = '20px';
+  const SURFACE_BG = '#1c1c1e';
+  const ACCENT_PRIMARY = '#64748b'; // Slate blue
+  const ACCENT_SECONDARY = '#6b8afd'; // Soft blue
+  const SYSTEM_FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif";
 
   // Default altitude values for each feature type
   const DEFAULT_ALTITUDES = {
@@ -217,10 +217,11 @@ function MapComponent() {
     if (!container || !map) return;
 
     const handleDblClick = (e) => {
-      const mode = activeMode;
-      const rect = container.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      try {
+        const mode = activeMode;
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
 
       // --- SCENARIO A: User is actively drawing a shape ---
       if (mode !== 'view' && mode !== 'modify') {
@@ -232,18 +233,22 @@ function MapComponent() {
           // WHY: MapboxOverlay intentionally swallows dblclicks. EditableGeoJsonLayer 
           // never knows the user tried to finish the line/polygon. We bypass the overlay 
           // and forcefully inject a synthetic dblclick directly into Deck.gl's private event bus.
-          overlay._deck._onEvent({
-            type: 'dblclick',
-            offsetCenter: { x, y },
-            srcEvent: e
-          });
+          try {
+            overlay._deck._onEvent({
+              type: 'dblclick',
+              offsetCenter: { x, y },
+              srcEvent: e
+            });
 
-          // Bulletproof fallback for specific DrawLineStringMode bugs
-          overlay._deck._onEvent({
-            type: 'keyup',
-            key: 'Enter',
-            srcEvent: e
-          });
+            // Bulletproof fallback for specific DrawLineStringMode bugs
+            overlay._deck._onEvent({
+              type: 'keyup',
+              key: 'Enter',
+              srcEvent: e
+            });
+          } catch (err) {
+            console.warn('Deck.gl event injection failed:', err);
+          }
         }
         return; // Prevent the menu from opening
       }
@@ -259,24 +264,28 @@ function MapComponent() {
       const overlay = deckOverlayRef.current;
       if (overlay) {
         // Check if user double-clicked an existing shape to modify it
-        const picked = overlay.pickObject({ x, y });
-        if (picked) {
-          // Handle wall segment picks (geofence curtain)
-          if (picked.object && picked.object.featureIndex != null) {
-            const idx = picked.object.featureIndex;
-            setSelectedFeatureIndexes([idx]);
-            setActiveMode('modify');
-            setShowMissionFlyout(true);
-            return;
+        try {
+          const picked = overlay.pickObject({ x, y });
+          if (picked) {
+            // Handle wall segment picks (geofence curtain)
+            if (picked.object && picked.object.featureIndex != null) {
+              const idx = picked.object.featureIndex;
+              setSelectedFeatureIndexes([idx]);
+              setActiveMode('modify');
+              setShowMissionFlyout(true);
+              return;
+            }
+            // Handle regular feature picks (EditableGeoJsonLayer)
+            if (picked.index != null && picked.index >= 0) {
+              const idx = picked.index;
+              setSelectedFeatureIndexes([idx]);
+              setActiveMode('modify');
+              setShowMissionFlyout(true);
+              return;
+            }
           }
-          // Handle regular feature picks (EditableGeoJsonLayer)
-          if (picked.index != null && picked.index >= 0) {
-            const idx = picked.index;
-            setSelectedFeatureIndexes([idx]);
-            setActiveMode('modify');
-            setShowMissionFlyout(true);
-            return;
-          }
+        } catch (err) {
+          console.warn('Deck.gl pickObject failed:', err);
         }
       }
 
@@ -292,6 +301,9 @@ function MapComponent() {
       e.preventDefault();
       e.stopPropagation();
       setMissionMenu({ visible: true, x: e.clientX, y: e.clientY, lngLat: [lngLat.lng, lngLat.lat] });
+      } catch (err) {
+        console.error('Double-click handler error:', err);
+      }
     };
 
     const handleClick = () => {
@@ -866,20 +878,20 @@ function MapComponent() {
     });
   }, [satelliteEnabled]);
 
-  // ── Tactical Styles ──
-  const HEADER_HEIGHT = '40px';
+  // ── UI Styles ──
+  const HEADER_HEIGHT = '44px';
   
   const frameStyle = {
     position: 'relative',
     width: '100%',
     height: '100%',
-    backgroundColor: TACTICAL_BG,
+    backgroundColor: SURFACE_BG,
     padding: `${HEADER_HEIGHT} ${FRAME_WIDTH} ${FRAME_WIDTH} ${FRAME_WIDTH}`,
     boxSizing: 'border-box',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
-    fontFamily: TACTICAL_FONT
+    fontFamily: SYSTEM_FONT
   };
 
   const mapViewportStyle = {
@@ -888,50 +900,50 @@ function MapComponent() {
     width: '100%',
     height: '100%',
     overflow: 'hidden',
-    border: '1px solid #333'
+    border: '1px solid #3a3a3c'
   };
 
-  const toolbarBtnStyle = (active, color = ACCENT_GREEN) => ({
-    width: '32px',
-    height: '26px',
+  const toolbarBtnStyle = (active, color = ACCENT_PRIMARY) => ({
+    width: '34px',
+    height: '28px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: active ? color : 'transparent',
-    border: `1px solid ${active ? color : '#444'}`,
-    color: active ? '#000' : '#ccc',
+    background: active ? color : 'rgba(255,255,255,0.06)',
+    border: 'none',
+    color: active ? '#fff' : '#98989d',
     cursor: 'pointer',
-    fontSize: '10px',
-    fontWeight: 600,
-    fontFamily: TACTICAL_FONT,
-    borderRadius: '2px',
-    transition: 'all 0.1s ease'
+    fontSize: '11px',
+    fontWeight: 500,
+    fontFamily: SYSTEM_FONT,
+    borderRadius: '4px',
+    transition: 'all 0.15s ease'
   });
 
-  const bottomDekStyle = {
+  const bottomBarStyle = {
     position: 'absolute',
-    bottom: '4px',
+    bottom: '1px',
     left: FRAME_WIDTH,
     right: FRAME_WIDTH,
-    height: '16px',
-    fontSize: '9px',
-    color: '#555',
+    height: '18px',
+    fontSize: '11px',
+    color: '#636366',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '0 8px',
-    fontFamily: TACTICAL_FONT,
-    letterSpacing: '0.5px'
+    padding: '0 10px',
+    fontFamily: SYSTEM_FONT,
+    letterSpacing: '0'
   };
 
   // Mode border color for active drawing states
   const getModeAccent = () => {
-    if (activeMode === 'nfz') return 'rgba(220, 53, 69, 0.6)';
-    if (activeMode === 'geofence') return 'rgba(255, 165, 0, 0.6)';
-    if (activeMode === 'searchZone') return 'rgba(59, 130, 246, 0.6)';
-    if (activeMode === 'airRoute' || activeMode === 'groundRoute') return 'rgba(16, 185, 129, 0.6)';
-    if (activeMode === 'modify') return 'rgba(255, 255, 255, 0.3)';
-    return '#333';
+    if (activeMode === 'nfz') return 'rgba(220, 83, 96, 0.5)';
+    if (activeMode === 'geofence') return 'rgba(255, 180, 70, 0.5)';
+    if (activeMode === 'searchZone') return 'rgba(100, 149, 237, 0.5)';
+    if (activeMode === 'airRoute' || activeMode === 'groundRoute') return 'rgba(72, 187, 143, 0.5)';
+    if (activeMode === 'modify') return 'rgba(255, 255, 255, 0.2)';
+    return '#3a3a3c';
   };
 
   return React.createElement('div', { style: frameStyle },
@@ -946,45 +958,45 @@ function MapComponent() {
         display: 'flex', 
         alignItems: 'center', 
         justifyContent: 'space-between',
-        padding: '0 24px',
-        fontFamily: TACTICAL_FONT,
-        borderBottom: '1px solid #222',
+        padding: '0 20px',
+        fontFamily: SYSTEM_FONT,
+        borderBottom: '1px solid #2c2c2e',
         zIndex: 2
       } 
     },
       // Left side - title
       React.createElement('div', { 
-        style: { display: 'flex', alignItems: 'center', gap: '12px' } 
+        style: { display: 'flex', alignItems: 'center', gap: '10px' } 
       },
         React.createElement('span', { 
-          style: { color: ACCENT_GREEN, fontWeight: 600, fontSize: '13px', letterSpacing: '2px' } 
-        }, 'OPENC2'),
+          style: { color: '#f5f5f7', fontWeight: 600, fontSize: '14px', letterSpacing: '0.3px' } 
+        }, 'OpenC2'),
         React.createElement('span', { 
-          style: { color: '#444', fontSize: '10px', letterSpacing: '1px' } 
-        }, 'C2 INTERFACE')
+          style: { color: '#636366', fontSize: '12px' } 
+        }, 'Command & Control')
       ),
       // Right side - toolbar buttons
       React.createElement('div', { 
-        style: { display: 'flex', alignItems: 'center', gap: '8px' } 
+        style: { display: 'flex', alignItems: 'center', gap: '6px' } 
       },
-        // Mission Flyout Toggle
-        React.createElement('button', {
-          style: toolbarBtnStyle(showMissionFlyout, ACCENT_GREEN),
-          onClick: () => setShowMissionFlyout(!showMissionFlyout),
-          title: 'Mission Elements'
-        }, '\u2630'),
         // Terrain Toggle
         React.createElement('button', {
-          style: toolbarBtnStyle(terrainEnabled, ACCENT_GREEN),
+          style: toolbarBtnStyle(terrainEnabled, ACCENT_PRIMARY),
           onClick: () => setTerrainEnabled(!terrainEnabled),
           title: terrainEnabled ? 'Disable 3D Terrain' : 'Enable 3D Terrain'
         }, terrainEnabled ? '3D' : '2D'),
         // Satellite Toggle
         React.createElement('button', {
-          style: toolbarBtnStyle(satelliteEnabled, ACCENT_BLUE),
+          style: toolbarBtnStyle(satelliteEnabled, ACCENT_SECONDARY),
           onClick: () => setSatelliteEnabled(!satelliteEnabled),
           title: satelliteEnabled ? 'Switch to Street Map' : 'Switch to Satellite'
-        }, 'SAT')
+        }, 'Sat'),
+        // Mission Flyout Toggle
+        React.createElement('button', {
+          style: toolbarBtnStyle(showMissionFlyout, ACCENT_PRIMARY),
+          onClick: () => setShowMissionFlyout(!showMissionFlyout),
+          title: 'Mission Elements'
+        }, '\u2630')
       )
     ),
     // ── MAP VIEWPORT ──
@@ -1004,37 +1016,36 @@ function MapComponent() {
           top: 0,
           bottom: 0,
           width: '260px',
-          background: 'rgba(10, 10, 12, 0.95)',
-          borderLeft: `1px solid ${ACCENT_GREEN}`,
+          background: 'rgba(28, 28, 30, 0.96)',
+          borderLeft: '1px solid #3a3a3c',
           zIndex: 5,
           padding: '16px',
-          backdropFilter: 'blur(10px)',
-          fontFamily: TACTICAL_FONT,
+          backdropFilter: 'blur(20px)',
+          fontFamily: SYSTEM_FONT,
           overflowY: 'auto',
           transform: showMissionFlyout ? 'translateX(0)' : 'translateX(100%)',
           transition: 'transform 200ms ease-out',
-          boxShadow: showMissionFlyout ? '-4px 0 20px rgba(0,0,0,0.4)' : 'none'
+          boxShadow: showMissionFlyout ? '-4px 0 24px rgba(0,0,0,0.3)' : 'none'
         },
         onClick: (e) => e.stopPropagation()
       },
         React.createElement('div', {
-          style: { color: ACCENT_GREEN, marginBottom: '12px', fontWeight: 600, fontSize: '11px', letterSpacing: '1px' }
-        }, '> MISSION_ELEMENTS'),
+          style: { color: '#f5f5f7', marginBottom: '14px', fontWeight: 600, fontSize: '13px' }
+        }, 'Mission Elements'),
         
         // Drawing mode indicator
         activeMode !== 'view' && activeMode !== 'modify' && React.createElement('div', {
           style: {
             padding: '10px 12px',
             marginBottom: '12px',
-            background: 'rgba(78, 204, 163, 0.1)',
-            border: `1px dashed ${ACCENT_GREEN}`,
-            borderRadius: '2px',
-            fontSize: '10px',
-            color: ACCENT_GREEN,
-            textAlign: 'center',
-            letterSpacing: '0.5px'
+            background: 'rgba(100, 116, 139, 0.15)',
+            border: '1px solid rgba(100, 116, 139, 0.3)',
+            borderRadius: '4px',
+            fontSize: '11px',
+            color: '#f5f5f7',
+            textAlign: 'center'
           }
-        }, `DRAWING: ${activeMode.toUpperCase()}`),
+        }, `Drawing: ${activeMode.charAt(0).toUpperCase() + activeMode.slice(1)}`),
         
         geoJson.features.length === 0
           ? React.createElement('div', {
@@ -1051,7 +1062,7 @@ function MapComponent() {
                 groundRoute: '#8b5a2b',
                 searchPoint: '#3b82f6'
               };
-              const featureColor = typeColors[featureType] || '#4ecca3';
+              const featureColor = typeColors[featureType] || '#64748b';
               
               // Helper to update feature property
               const updateFeatureProperty = (propName, value) => {
@@ -1068,33 +1079,33 @@ function MapComponent() {
               // Inline input style
               const inlineInputStyle = {
                 width: '60px',
-                padding: '4px 6px',
-                borderRadius: '2px',
-                border: '1px solid rgba(255,255,255,0.2)',
-                background: 'rgba(0,0,0,0.3)',
-                color: '#ccc',
+                padding: '5px 8px',
+                borderRadius: '4px',
+                border: '1px solid rgba(255,255,255,0.12)',
+                background: 'rgba(0,0,0,0.2)',
+                color: '#f5f5f7',
                 fontSize: '11px',
                 textAlign: 'center',
-                fontFamily: TACTICAL_FONT
+                fontFamily: SYSTEM_FONT
               };
               
               return React.createElement('div', { key: i },
                 // Element row
                 React.createElement('div', {
                   style: {
-                    padding: '8px 10px',
+                    padding: '10px 12px',
                     marginBottom: isSelected ? '0' : '4px',
-                    background: isSelected ? 'rgba(78, 204, 163, 0.15)' : 'transparent',
-                    borderLeft: `2px solid ${featureColor}`,
-                    fontSize: '11px',
-                    color: isSelected ? '#fff' : '#aaa',
+                    background: isSelected ? 'rgba(100, 116, 139, 0.2)' : 'transparent',
+                    borderLeft: `3px solid ${featureColor}`,
+                    fontSize: '12px',
+                    color: isSelected ? '#f5f5f7' : '#98989d',
                     cursor: 'pointer',
-                    transition: 'all 0.1s',
+                    transition: 'all 0.15s',
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center'
                   },
-                  onMouseEnter: (e) => { if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; },
+                  onMouseEnter: (e) => { if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; },
                   onMouseLeave: (e) => { if (!isSelected) e.currentTarget.style.background = 'transparent'; },
                   onClick: () => {
                     if (isSelected) {
@@ -1114,12 +1125,11 @@ function MapComponent() {
                 // Expanded inline property editor (when selected)
                 isSelected && ['geofence', 'nfz', 'searchZone', 'airRoute'].includes(featureType) && React.createElement('div', {
                   style: {
-                    padding: '12px 10px',
+                    padding: '12px 12px',
                     marginBottom: '4px',
-                    marginLeft: '2px',
-                    borderLeft: `2px solid ${featureColor}`,
-                    background: 'rgba(0, 0, 0, 0.3)',
-                    fontSize: '10px'
+                    borderLeft: `3px solid ${featureColor}`,
+                    background: 'rgba(0, 0, 0, 0.2)',
+                    fontSize: '11px'
                   },
                   onClick: (e) => e.stopPropagation()
                 },
@@ -1176,18 +1186,17 @@ function MapComponent() {
                       width: '100%',
                       marginTop: '8px',
                       padding: '6px 10px',
-                      borderRadius: '2px',
-                      border: '1px solid rgba(220, 53, 69, 0.5)',
+                      borderRadius: '4px',
+                      border: '1px solid rgba(220, 83, 96, 0.4)',
                       background: 'transparent',
-                      color: '#dc3545',
-                      fontSize: '10px',
-                      fontWeight: 600,
-                      fontFamily: TACTICAL_FONT,
+                      color: '#e05561',
+                      fontSize: '11px',
+                      fontWeight: 500,
+                      fontFamily: SYSTEM_FONT,
                       cursor: 'pointer',
-                      letterSpacing: '0.5px',
-                      transition: 'all 0.1s'
+                      transition: 'all 0.15s'
                     },
-                    onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(220, 53, 69, 0.2)'; },
+                    onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(220, 83, 96, 0.15)'; },
                     onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
                     onClick: () => {
                       setGeoJson(prev => ({
@@ -1197,17 +1206,16 @@ function MapComponent() {
                       setSelectedFeatureIndexes([]);
                       setActiveMode('view');
                     }
-                  }, 'DELETE')
+                  }, 'Delete')
                 ),
                 
                 // For elements without altitude (groundRoute, searchPoint), show just delete
                 isSelected && !['geofence', 'nfz', 'searchZone', 'airRoute'].includes(featureType) && React.createElement('div', {
                   style: {
-                    padding: '10px',
+                    padding: '10px 12px',
                     marginBottom: '4px',
-                    marginLeft: '2px',
-                    borderLeft: `2px solid ${featureColor}`,
-                    background: 'rgba(0, 0, 0, 0.3)'
+                    borderLeft: `3px solid ${featureColor}`,
+                    background: 'rgba(0, 0, 0, 0.2)'
                   },
                   onClick: (e) => e.stopPropagation()
                 },
@@ -1215,18 +1223,17 @@ function MapComponent() {
                     style: {
                       width: '100%',
                       padding: '6px 10px',
-                      borderRadius: '2px',
-                      border: '1px solid rgba(220, 53, 69, 0.5)',
+                      borderRadius: '4px',
+                      border: '1px solid rgba(220, 83, 96, 0.4)',
                       background: 'transparent',
-                      color: '#dc3545',
-                      fontSize: '10px',
-                      fontWeight: 600,
-                      fontFamily: TACTICAL_FONT,
+                      color: '#e05561',
+                      fontSize: '11px',
+                      fontWeight: 500,
+                      fontFamily: SYSTEM_FONT,
                       cursor: 'pointer',
-                      letterSpacing: '0.5px',
-                      transition: 'all 0.1s'
+                      transition: 'all 0.15s'
                     },
-                    onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(220, 53, 69, 0.2)'; },
+                    onMouseEnter: (e) => { e.currentTarget.style.background = 'rgba(220, 83, 96, 0.15)'; },
                     onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
                     onClick: () => {
                       setGeoJson(prev => ({
@@ -1236,7 +1243,7 @@ function MapComponent() {
                       setSelectedFeatureIndexes([]);
                       setActiveMode('view');
                     }
-                  }, 'DELETE')
+                  }, 'Delete')
                 )
               );
             })
@@ -1249,21 +1256,21 @@ function MapComponent() {
         top: missionMenu.y,
         left: missionMenu.x,
         zIndex: 10,
-        background: 'rgba(10, 10, 12, 0.95)',
-        border: `1px solid ${ACCENT_GREEN}`,
-        borderRadius: '2px',
-        padding: '4px 0',
+        background: 'rgba(28, 28, 30, 0.96)',
+        border: '1px solid #48484a',
+        borderRadius: '6px',
+        padding: '6px 0',
         minWidth: '180px',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
-        backdropFilter: 'blur(10px)',
-        fontFamily: TACTICAL_FONT,
-        fontSize: '12px'
+        boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+        backdropFilter: 'blur(20px)',
+        fontFamily: SYSTEM_FONT,
+        fontSize: '13px'
       },
       onClick: (e) => e.stopPropagation()
     },
       React.createElement('div', {
-        style: { padding: '6px 12px', color: ACCENT_GREEN, fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }
-      }, '> ADD_ELEMENT'),
+        style: { padding: '8px 14px', color: '#98989d', fontSize: '11px', fontWeight: 500 }
+      }, 'Add Element'),
       ['nfz', 'searchZone', 'geofence', 'airRoute', 'groundRoute', 'searchPoint'].map((key) => {
         const menuColors = {
           nfz: '#dc3545',
@@ -1282,12 +1289,12 @@ function MapComponent() {
             display: 'flex',
             alignItems: 'center',
             gap: '10px',
-            transition: 'all 0.1s',
+            transition: 'all 0.15s',
             borderLeft: '2px solid transparent',
-            fontFamily: TACTICAL_FONT
+            fontFamily: SYSTEM_FONT
           },
           onMouseEnter: (e) => { 
-            e.currentTarget.style.background = 'rgba(78, 204, 163, 0.15)'; 
+            e.currentTarget.style.background = 'rgba(100, 116, 139, 0.2)'; 
             e.currentTarget.style.borderLeftColor = menuColors[key];
             e.currentTarget.style.color = '#fff';
           },
@@ -1324,13 +1331,13 @@ function MapComponent() {
     )
     ), // End mapViewportStyle div
 
-    // ── BOTTOM STATUS BAR (DEK) ──
-    React.createElement('div', { style: bottomDekStyle },
-      React.createElement('span', null, `ELEMENTS: ${geoJson.features.length} | MODE: ${activeMode.toUpperCase()}`),
-      React.createElement('span', { style: { color: '#888' } }, 
+    // ── BOTTOM STATUS BAR ──
+    React.createElement('div', { style: bottomBarStyle },
+      React.createElement('span', null, `${geoJson.features.length} elements · ${activeMode.charAt(0).toUpperCase() + activeMode.slice(1)} mode`),
+      React.createElement('span', { style: { color: '#8e8e93' } }, 
         cursorCoords 
           ? `${cursorCoords.lat.toFixed(6)}, ${cursorCoords.lng.toFixed(6)}`
-          : '--.--, --.--'
+          : '—'
       )
     )
   );
@@ -1339,8 +1346,8 @@ function MapComponent() {
 function App() {
   return React.createElement('div', { 
     style: { 
-      fontFamily: "'JetBrains Mono', 'Roboto Mono', 'Consolas', monospace",
-      background: '#0a0a0c',
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif",
+      background: '#1c1c1e',
       width: '100vw',
       height: '100vh',
       boxSizing: 'border-box',
