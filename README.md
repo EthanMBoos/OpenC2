@@ -1,4 +1,4 @@
-# OpenC2 🛰️
+# OpenC2
 
 ## 📖 Overview
 **OpenC2** is a high-performance Command and Control interface built with Electron and React. It is designed to bridge the critical gap between low-level debugging (RViz) and legacy ground stations (MissionPlanner). 
@@ -8,38 +8,35 @@ While traditional tools are often too resource-heavy for field use or too rigid 
 ## 🏗️ System Architecture
 OpenC2 prioritizes **Data Sovereignty** and **Low-Latency Ingestion**. By utilizing a custom protocol interceptor within an Electron wrapper, the system remains fully operational in denied, air-gapped environments.
 
-### The Pipeline
-1. **Ingestion:** Raw **UDP Datagrams** are captured via a **Zenoh** node.
-2. **Processing:** **Protobuf** payloads are decoded in a dedicated **Renderer Worker** thread to maintain a 60FPS "glass cockpit" experience.
-3. **Visualization:** Decoded data is piped to a **Zustand** store, triggering reactive updates in the **Deck.gl** and **MapLibre** stack.
-
 ```mermaid
 flowchart LR
     %% External Fleet
-    Fleet(("🛸 UDP Data Bus<br/>(Fleet Protobuf Stream)"))
+    Fleet(("🛸 UDP Data Bus<br/>(Protobuf Stream)"))
 
-    %% Headless Data Gateway (Rust)
-    subgraph RustGateway ["Rust Telemetry Gateway (Sidecar)"]
+    %% Headless Data Gateway (Go)
+    subgraph GoGateway ["Go Telemetry Gateway (Sidecar)"]
         direction TB
-        UDP_Node["UDP Socket Listener<br/>(tokio::net)"]
-        Decoder["Protobuf Decoder<br/>(prost)"]
-        WsServer["Distribution API<br/>(WebSocket Port Listener)"]
+        UDP_Listener["net.ListenUDP<br/>(Goroutine)"]
+        Pool["sync.Pool<br/>(Object Reuse)"]
+        Decoder["Protobuf Decoder<br/>(proto.Unmarshal)"]
+        WsServer["WebSocket Server<br/>(gorilla/websocket)"]
         
-        UDP_Node --> Decoder --> WsServer
+        UDP_Listener --> Pool
+        Pool --> Decoder --> WsServer
     end
 
     %% Main C2 Client
     subgraph Electron ["Electron Application (Frontend)"]
         direction LR
-        WsClient["Stream Client<br/>(WebSocket)"]
+        WsClient["Zustand WS Client<br/>(Stream Ingest)"]
 
-        subgraph UI ["Map Interface"]
+        subgraph UI ["Map Interface (60FPS)"]
             State["React State<br/>(Zustand)"]
             
             subgraph Map ["Visualization Stack"]
                 direction TB
-                Deck["Deck.gl<br/>(3D Layers)"]
-                MapLibre["MapLibre<br/>(Tiles + Terrain)"]
+                Deck["Deck.gl<br/>(Interleaved Layers)"]
+                MapLibre["MapLibre<br/>(3D Terrain)"]
             end
             
             State --> Deck
@@ -49,16 +46,16 @@ flowchart LR
     end
 
     %% Connections
-    Fleet ==> UDP_Node
-    WsServer == "POJO Stream" ==> WsClient
+    Fleet ==> UDP_Listener
+    WsServer == "JSON/POJO Stream" ==> WsClient
 
     %% Styling
     classDef bus fill:#ff4e00,stroke:#fff,stroke-width:2px,color:#fff;
-    classDef backend fill:#1a1a2e,stroke:#4ecca3,stroke-width:2px,color:#fff;
+    classDef backend fill:#00add8,stroke:#fff,stroke-width:2px,color:#fff;
     classDef ui fill:#16213e,stroke:#3498db,stroke-width:2px,color:#fff;
 
     class Fleet bus;
-    class RustGateway backend;
+    class GoGateway backend;
     class Electron,UI,Map ui;
 ```
 
@@ -91,18 +88,16 @@ Drawing and editing geographic features directly on the map using **`@deck.gl-co
 * **3D Visualization Layers:** Features are rendered using `SolidPolygonLayer` for walls/ceilings and `PathLayer` for routes/borders, all with proper depth testing.
 
 ### 4. The Pipeline
-1. **Ingestion (Headless Gateway):** Raw **UDP Datagrams** are captured via a dedicated **Rust/Zenoh** sidecar daemon.
-2. **Processing & Caching:** The Rust gateway decodes **Protobuf** payloads in real-time, maintaining a localized, in-memory state of the fleet.
-3. **Distribution:** Clean, decoded telemetry is streamed to the frontend via a **WebSocket** port listener.
-4. **Visualization:** Decoded Plain Old JavaScript Objects (POJOs) pipe directly from the local stream client into a **Zustand** store, triggering reactive updates in the **Deck.gl** and **MapLibre** stack at a steady 60FPS.
-
----
+* **Ingestion (Headless Gateway):** Raw UDP Datagrams are captured via a dedicated Go sidecar daemon.
+* **Processing & Caching:** The Go gateway decodes Protobuf payloads in real-time, utilizing object reuse via sync.Pool to drastically reduce garbage collection pressure and avoid repeated memory allocations, which maintains a strictly deterministic, low-latency in-memory state of the fleet.
+* **Distribution:** Clean, decoded telemetry is streamed to the frontend via a local WebSocket port listener.
+* **Visualization:** Decoded Plain Old JavaScript Objects (POJOs) pipe directly from the local stream client into a Zustand store, triggering reactive updates in the Deck.gl and MapLibre stack at a steady 60FPS.
 
 ## 🚀 Stack
 | Layer | Technologies |
 | :--- | :--- |
 | **Frontend** | React, Electron, JavaScript |
-| **Backend Gateway** | Rust, Tokio, zenoh-rs, WebSockets |
+| **Backend Gateway** | Go, Goroutines, WebSockets, sync.Pool |
 | **Graphics** | Deck.gl, MapLibre (WebGL), @deck.gl-community/editable-layers |
 | **Data** | Protobuf, PMTiles, Uint8Array Streams |
 
@@ -111,15 +106,18 @@ Drawing and editing geographic features directly on the map using **`@deck.gl-co
 - [x] **Satellite Integration:** ESRI World Imagery base layer toggle for aerial context.
 - [x] **3D Terrain:** MapLibre native terrain with raster-dem source and hillshading.
 - [x] **Tactical Markup & Editing:** Mission element drawing in 2D/3D with automatic terrain draping (curtains/walls) and intuitive geometry editing.
-- [ ] **Headless Rust Gateway:** Extract UDP/Protobuf ingestion into a separate backend repository and implement the Zustand WebSocket client for reactive UI updates.
 - [ ] **Air-Gapped Map Storage:** Full offline PMTiles integration for both routing basemaps and high-resolution 3D terrain data.
 
 ### Phase II: Command & Sensory Integration
+- [ ] **Headless Go Server:** Extract raw UDP/Protobuf ingestion from the radio link into a separate Go backend repository.
+- [ ] **Reactive UI Transport:** Expose a local WebSocket server from the Go sidecar and implement the Zustand WebSocket client in React to stream telemetry directly to the UI without blocking Electron's event loop.
+- [ ] **Memory & Deserialization Optimization:** Implement object reuse via sync. Pool for Protobuf deserialization to drastically reduce garbage collection pressure and maintain strict, low-latency execution.
+- [ ] **Lifecycle Orchestration:** Launch and manage the compiled Go binary using Electron's utilityProcess API instead of standard Node.js child processes, ensuring the sidecar is cleanly terminated if the main interface exits or crashes.
+
+### Phase III: Command & Sensory Integration
 - [ ] **Augmented Sensor Frustums:** Projecting camera FOV footprints and planned paths as dynamic 3D meshes on the terrain using gimbal telemetry.
 - [ ] **WebRTC Pipeline:** Low-latency (<300ms) glass-to-glass video streaming for real-time verification.
 - [ ] **Interest-Driven Uplink:** "Silent-Running" state that only triggers high-bandwidth streams upon edge-detection alerts.
-
----
 
 ## 🤝 Contributing
 OpenC2 is a research project. We welcome contributions that focus on performance optimizations in the telemetry pipeline or advanced spatial visualization.
