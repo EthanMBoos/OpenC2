@@ -886,12 +886,14 @@ function MapComponent() {
   }, [satelliteEnabled]);
 
   // ── Tactical Styles ──
+  const HEADER_HEIGHT = '40px';
+  
   const frameStyle = {
     position: 'relative',
     width: '100%',
     height: '100%',
     backgroundColor: TACTICAL_BG,
-    padding: FRAME_WIDTH,
+    padding: `${HEADER_HEIGHT} ${FRAME_WIDTH} ${FRAME_WIDTH} ${FRAME_WIDTH}`,
     boxSizing: 'border-box',
     display: 'flex',
     flexDirection: 'column',
@@ -908,28 +910,17 @@ function MapComponent() {
     border: '1px solid #333'
   };
 
-  const toolbarStyle = {
-    position: 'absolute',
-    right: '12px',
-    top: '50%',
-    transform: 'translateY(-50%)',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-    zIndex: 5
-  };
-
-  const iconBtnStyle = (active, color = ACCENT_GREEN) => ({
-    width: '36px',
-    height: '36px',
+  const toolbarBtnStyle = (active, color = ACCENT_GREEN) => ({
+    width: '32px',
+    height: '26px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: active ? color : 'rgba(10, 10, 12, 0.85)',
+    background: active ? color : 'transparent',
     border: `1px solid ${active ? color : '#444'}`,
     color: active ? '#000' : '#ccc',
     cursor: 'pointer',
-    fontSize: '11px',
+    fontSize: '10px',
     fontWeight: 600,
     fontFamily: TACTICAL_FONT,
     borderRadius: '2px',
@@ -963,26 +954,57 @@ function MapComponent() {
   };
 
   return React.createElement('div', { style: frameStyle },
-    // ── TOP HEADER BAR (absolute positioned in frame gutter) ──
+    // ── TOP HEADER BAR (integrated toolbar) ──
     React.createElement('div', { 
       style: { 
         position: 'absolute',
-        top: '4px',
-        left: FRAME_WIDTH,
-        right: FRAME_WIDTH,
-        height: '16px', 
-        fontSize: '10px', 
+        top: 0,
+        left: 0,
+        right: 0,
+        height: HEADER_HEIGHT, 
         display: 'flex', 
         alignItems: 'center', 
         justifyContent: 'space-between',
-        padding: '0 4px',
+        padding: '0 24px',
         fontFamily: TACTICAL_FONT,
-        letterSpacing: '1px',
-        zIndex: 1
+        borderBottom: '1px solid #222',
+        zIndex: 2
       } 
     },
-      React.createElement('span', { style: { color: ACCENT_GREEN, fontWeight: 600 } }, 'OPENC2'),
-      React.createElement('span', { style: { color: '#444' } }, 'C2 INTERFACE v1.0')
+      // Left side - title
+      React.createElement('div', { 
+        style: { display: 'flex', alignItems: 'center', gap: '12px' } 
+      },
+        React.createElement('span', { 
+          style: { color: ACCENT_GREEN, fontWeight: 600, fontSize: '13px', letterSpacing: '2px' } 
+        }, 'OPENC2'),
+        React.createElement('span', { 
+          style: { color: '#444', fontSize: '10px', letterSpacing: '1px' } 
+        }, 'C2 INTERFACE')
+      ),
+      // Right side - toolbar buttons
+      React.createElement('div', { 
+        style: { display: 'flex', alignItems: 'center', gap: '8px' } 
+      },
+        // Mission Flyout Toggle
+        React.createElement('button', {
+          style: toolbarBtnStyle(showMissionFlyout, ACCENT_GREEN),
+          onClick: () => setShowMissionFlyout(!showMissionFlyout),
+          title: 'Mission Elements'
+        }, '\u2630'),
+        // Terrain Toggle
+        React.createElement('button', {
+          style: toolbarBtnStyle(terrainEnabled, ACCENT_GREEN),
+          onClick: () => setTerrainEnabled(!terrainEnabled),
+          title: terrainEnabled ? 'Disable 3D Terrain' : 'Enable 3D Terrain'
+        }, terrainEnabled ? '3D' : '2D'),
+        // Satellite Toggle
+        React.createElement('button', {
+          style: toolbarBtnStyle(satelliteEnabled, ACCENT_BLUE),
+          onClick: () => setSatelliteEnabled(!satelliteEnabled),
+          title: satelliteEnabled ? 'Switch to Street Map' : 'Switch to Satellite'
+        }, 'SAT')
+      )
     ),
     // ── MAP VIEWPORT ──
     React.createElement('div', { style: { ...mapViewportStyle, borderColor: getModeAccent() } },
@@ -993,45 +1015,24 @@ function MapComponent() {
         style: { width: '100%', height: '100%' }
       }),
 
-      // ── RIGHT GUTTER TOOLBAR ──
-      React.createElement('div', { style: toolbarStyle },
-        // Mission Flyout Toggle
-        React.createElement('button', {
-          style: iconBtnStyle(showMissionFlyout, ACCENT_GREEN),
-          onClick: () => setShowMissionFlyout(!showMissionFlyout),
-          title: 'Mission Elements'
-        }, '\u2630'),
-        
-        // Terrain Toggle
-        React.createElement('button', {
-          style: iconBtnStyle(terrainEnabled, ACCENT_GREEN),
-          onClick: () => setTerrainEnabled(!terrainEnabled),
-          title: terrainEnabled ? 'Disable 3D Terrain' : 'Enable 3D Terrain'
-        }, terrainEnabled ? '3D' : '2D'),
-        
-        // Satellite Toggle
-        React.createElement('button', {
-          style: iconBtnStyle(satelliteEnabled, ACCENT_BLUE),
-          onClick: () => setSatelliteEnabled(!satelliteEnabled),
-          title: satelliteEnabled ? 'Switch to Street Map' : 'Switch to Satellite'
-        }, 'SAT')
-      ),
-
-      // ── MISSION FLYOUT (Right side panel) ──
-      showMissionFlyout && React.createElement('div', {
+      // ── MISSION FLYOUT (Right side panel with slide animation) ──
+      React.createElement('div', {
         style: {
           position: 'absolute',
-          right: '56px',
+          right: 0,
           top: 0,
           bottom: 0,
           width: '260px',
           background: 'rgba(10, 10, 12, 0.95)',
           borderLeft: `1px solid ${ACCENT_GREEN}`,
-          zIndex: 4,
+          zIndex: 5,
           padding: '16px',
           backdropFilter: 'blur(10px)',
           fontFamily: TACTICAL_FONT,
-          overflowY: 'auto'
+          overflowY: 'auto',
+          transform: showMissionFlyout ? 'translateX(0)' : 'translateX(100%)',
+          transition: 'transform 200ms ease-out',
+          boxShadow: showMissionFlyout ? '-4px 0 20px rgba(0,0,0,0.4)' : 'none'
         },
         onClick: (e) => e.stopPropagation()
       },
@@ -1206,7 +1207,7 @@ function MapComponent() {
       return React.createElement('div', {
         style: {
           position: 'absolute',
-          right: showMissionFlyout ? '316px' : '56px',
+          right: showMissionFlyout ? '276px' : '16px',
           top: '50%',
           transform: 'translateY(-50%)',
           width: '200px',
