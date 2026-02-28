@@ -92,6 +92,18 @@ function MapComponent() {
     pendingMenu: null // Stores event coords if menu was deferred
   });
 
+  // WHY: Keep state in a ref for stable event handler access.
+  // This allows us to bind event listeners once (empty dep array)
+  // while still accessing current state values.
+  const eventStateRef = React.useRef({
+    activeMode: 'view',
+    selectedFeatureIndexes: [],
+    showMissionFlyout: false,
+    geoJson: { type: 'FeatureCollection', features: [] },
+    missionMenuVisible: false,
+    showHelpOverlay: false
+  });
+
   const [terrainEnabled, setTerrainEnabled] = React.useState(false);
   const [satelliteEnabled, setSatelliteEnabled] = React.useState(false);
   const [activeMode, setActiveMode] = React.useState('view');
@@ -214,7 +226,21 @@ function MapComponent() {
     }
   }, [activeMode]);
 
+  // Sync state to ref for stable event handler access
+  React.useEffect(() => {
+    eventStateRef.current = {
+      activeMode,
+      selectedFeatureIndexes,
+      showMissionFlyout,
+      geoJson,
+      missionMenuVisible: missionMenu.visible,
+      showHelpOverlay
+    };
+  }, [activeMode, selectedFeatureIndexes, showMissionFlyout, geoJson, missionMenu.visible, showHelpOverlay]);
+
   // ── 3. Handle Complex Events (Clicks, Right-clicks, Double Clicks & Keydowns) ──
+  // WHY: Bound once with empty dependency array to avoid listener churn.
+  // State is accessed via eventStateRef.current for fresh values.
   React.useEffect(() => {
     const container = mapContainerRef.current;
     const map = mapRef.current;
@@ -235,7 +261,7 @@ function MapComponent() {
           if (picked.index != null && picked.index >= 0) {
             // Geofences should only be selectable via their walls/border layers,
             // not from clicking the invisible fill area in EditableGeoJsonLayer
-            const feature = geoJson.features[picked.index];
+            const feature = eventStateRef.current.geoJson.features[picked.index];
             if (feature?.properties?.featureType === 'geofence') {
               return null;
             }
@@ -251,7 +277,7 @@ function MapComponent() {
     // Handle double-click: finish drawing OR enter modify mode on feature
     const handleDblClick = (e) => {
       try {
-        const mode = activeMode;
+        const mode = eventStateRef.current.activeMode;
         const rect = container.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
@@ -422,9 +448,10 @@ function MapComponent() {
         const rect = container.getBoundingClientRect();
         const x = clientX - rect.left;
         const y = clientY - rect.top;
+        const currentMode = eventStateRef.current.activeMode;
 
         // If currently drawing, cancel the drawing and return to view mode
-        if (activeMode !== 'view' && activeMode !== 'modify') {
+        if (currentMode !== 'view' && currentMode !== 'modify') {
           setActiveMode('view');
           setSelectedFeatureIndexes([]);
           return;
@@ -446,7 +473,7 @@ function MapComponent() {
           });
         } else {
           // Right-clicked on empty space - show add element menu
-          if (activeMode === 'modify') {
+          if (currentMode === 'modify') {
             setActiveMode('view');
             setSelectedFeatureIndexes([]);
           }
@@ -503,13 +530,13 @@ function MapComponent() {
       if (e.altKey) return;
       
       // Close menu if visible
-      if (missionMenu.visible) {
+      if (eventStateRef.current.missionMenuVisible) {
         setMissionMenu(prev => ({ ...prev, visible: false }));
         return;
       }
 
       // Only handle clicks when in view mode (not drawing or modifying)
-      if (activeMode !== 'view') return;
+      if (eventStateRef.current.activeMode !== 'view') return;
 
       const rect = container.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -522,39 +549,40 @@ function MapComponent() {
         setShowMissionFlyout(true);
       } else {
         // Single-click on empty space: deselect
-        if (selectedFeatureIndexes.length > 0) {
+        if (eventStateRef.current.selectedFeatureIndexes.length > 0) {
           setSelectedFeatureIndexes([]);
         }
       }
     };
 
     const handleKeyDown = (e) => {
+      const state = eventStateRef.current;
       if (e.key === 'Escape') {
         // Close help overlay first if open
-        if (showHelpOverlay) {
+        if (state.showHelpOverlay) {
           setShowHelpOverlay(false);
           return;
         }
         setMissionMenu((prev) => ({ ...prev, visible: false }));
-        if (activeMode !== 'view') {
+        if (state.activeMode !== 'view') {
           setActiveMode('view');
           setSelectedFeatureIndexes([]);
-        } else if (showMissionFlyout) {
+        } else if (state.showMissionFlyout) {
           setShowMissionFlyout(false);
         }
         drawJustFinishedRef.current = false; // Reset so double-click works again
       }
       if (e.key === 'Enter') {
-        if (activeMode === 'modify') {
+        if (state.activeMode === 'modify') {
           setActiveMode('view');
           setSelectedFeatureIndexes([]);
         }
       }
-      if ((e.key === 'Backspace' || e.key === 'Delete') && selectedFeatureIndexes.length > 0) {
+      if ((e.key === 'Backspace' || e.key === 'Delete') && state.selectedFeatureIndexes.length > 0) {
         e.preventDefault();
         setGeoJson((prev) => ({
           ...prev,
-          features: prev.features.filter((_, i) => !selectedFeatureIndexes.includes(i))
+          features: prev.features.filter((_, i) => !state.selectedFeatureIndexes.includes(i))
         }));
         setSelectedFeatureIndexes([]);
         setActiveMode('view');
@@ -589,7 +617,7 @@ function MapComponent() {
       container.removeEventListener('click', handleClick);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [activeMode, selectedFeatureIndexes, showMissionFlyout, geoJson, missionMenu.visible, showHelpOverlay]);
+  }, []); // Empty dep array - bind once, read state from eventStateRef
 
   // ── 3.5 Async Terrain Sampling ──
   // WHY: Move terrain elevation queries off the render path.
