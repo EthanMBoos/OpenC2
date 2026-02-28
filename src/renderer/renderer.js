@@ -101,6 +101,7 @@ function MapComponent() {
   const [mapIdleToken, setMapIdleToken] = React.useState(0);
   const [showMissionFlyout, setShowMissionFlyout] = React.useState(false);
   const [cursorCoords, setCursorCoords] = React.useState(null);
+  const [showHelpOverlay, setShowHelpOverlay] = React.useState(false);
 
   // ── Style Constants ──
   const FRAME_WIDTH = '20px';
@@ -539,6 +540,11 @@ function MapComponent() {
 
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
+        // Close help overlay first if open
+        if (showHelpOverlay) {
+          setShowHelpOverlay(false);
+          return;
+        }
         setMissionMenu((prev) => ({ ...prev, visible: false }));
         if (activeMode !== 'view') {
           setActiveMode('view');
@@ -593,7 +599,7 @@ function MapComponent() {
       container.removeEventListener('click', handleClick);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [activeMode, selectedFeatureIndexes, showMissionFlyout, geoJson, missionMenu.visible]);
+  }, [activeMode, selectedFeatureIndexes, showMissionFlyout, geoJson, missionMenu.visible, showHelpOverlay]);
 
   // ── 4. Render Deck.gl Layers ──
   React.useEffect(() => {
@@ -1749,12 +1755,197 @@ function MapComponent() {
           }
         }, '\u{1F4CB} Copy Coordinates')
       )
+    ),
+
+    // ── HELP OVERLAY MODAL ──
+    showHelpOverlay && React.createElement('div', {
+      style: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: 'rgba(0, 0, 0, 0.7)',
+        backdropFilter: 'blur(4px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000
+      },
+      onClick: () => setShowHelpOverlay(false)
+    },
+      React.createElement('div', {
+        style: {
+          background: '#1c1c1e',
+          border: '1px solid #3a3a3c',
+          borderRadius: '12px',
+          padding: '24px',
+          maxWidth: '480px',
+          width: '90%',
+          maxHeight: '80%',
+          overflow: 'auto',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+          fontFamily: SYSTEM_FONT
+        },
+        onClick: (e) => e.stopPropagation()
+      },
+        // Header
+        React.createElement('div', {
+          style: {
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '20px',
+            paddingBottom: '12px',
+            borderBottom: '1px solid #3a3a3c'
+          }
+        },
+          React.createElement('h2', {
+            style: { margin: 0, color: '#f5f5f7', fontSize: '18px', fontWeight: 600 }
+          }, 'Controls & Usage'),
+          React.createElement('button', {
+            style: {
+              background: 'none',
+              border: 'none',
+              color: '#8e8e93',
+              fontSize: '20px',
+              cursor: 'pointer',
+              padding: '4px 8px',
+              lineHeight: 1
+            },
+            onClick: () => setShowHelpOverlay(false)
+          }, '\u00D7')
+        ),
+
+        // Controls section
+        React.createElement('div', { style: { marginBottom: '20px' } },
+          React.createElement('h3', {
+            style: { color: '#f5f5f7', fontSize: '13px', fontWeight: 600, marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }
+          }, 'Navigation'),
+          React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Pan'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Left-click + drag')
+            ),
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Zoom'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Scroll wheel')
+            ),
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Orbit / Tilt (3D)'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Option + drag / Middle-click drag')
+            ),
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Orbit (Mouse)'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Right-click hold + drag')
+            )
+          )
+        ),
+
+        // Interaction section
+        React.createElement('div', { style: { marginBottom: '20px' } },
+          React.createElement('h3', {
+            style: { color: '#f5f5f7', fontSize: '13px', fontWeight: 600, marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }
+          }, 'Interaction'),
+          React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Select / Edit element'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Click on element')
+            ),
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Context menu'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Right-click (quick tap)')
+            ),
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Delete element'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Select + Delete/Backspace')
+            ),
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Cancel / Deselect'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Escape')
+            )
+          )
+        ),
+
+        // Drawing section
+        React.createElement('div', null,
+          React.createElement('h3', {
+            style: { color: '#f5f5f7', fontSize: '13px', fontWeight: 600, marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }
+          }, 'Drawing'),
+          React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Add element'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Right-click on empty space')
+            ),
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Place points'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Click to add vertices')
+            ),
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Finish shape'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Double-click / Enter')
+            ),
+            React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', color: '#ccc', fontSize: '13px' } },
+              React.createElement('span', null, 'Cancel drawing'),
+              React.createElement('span', { style: { color: '#8e8e93' } }, 'Escape / Right-click')
+            )
+          )
+        ),
+
+        // Tip
+        React.createElement('div', {
+          style: {
+            marginTop: '20px',
+            padding: '12px',
+            background: 'rgba(100, 116, 139, 0.15)',
+            borderRadius: '8px',
+            border: '1px solid rgba(100, 116, 139, 0.3)'
+          }
+        },
+          React.createElement('span', { style: { color: '#8e8e93', fontSize: '12px' } },
+            '\u{1F4A1} Tip: Click the "2D" button in the toolbar to switch to 3D mode, enabling camera orbit and tilt.'
+          )
+        )
+      )
     )
     ), // End mapViewportStyle div
 
     // ── BOTTOM STATUS BAR ──
     React.createElement('div', { style: bottomBarStyle },
-      React.createElement('span', null, `${geoJson.features.length} elements · ${activeMode.charAt(0).toUpperCase() + activeMode.slice(1)} mode`),
+      // Left side - help button and status
+      React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+        React.createElement('button', {
+          style: {
+            width: '16px',
+            height: '16px',
+            borderRadius: '50%',
+            border: '1px solid #636366',
+            background: 'transparent',
+            color: '#636366',
+            fontSize: '10px',
+            fontWeight: 600,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 0,
+            lineHeight: 1,
+            transition: 'all 0.15s ease'
+          },
+          onMouseEnter: (e) => {
+            e.currentTarget.style.borderColor = '#8e8e93';
+            e.currentTarget.style.color = '#8e8e93';
+          },
+          onMouseLeave: (e) => {
+            e.currentTarget.style.borderColor = '#636366';
+            e.currentTarget.style.color = '#636366';
+          },
+          onClick: () => setShowHelpOverlay(true),
+          title: 'Help & Controls'
+        }, '?'),
+        React.createElement('span', null, `${activeMode.charAt(0).toUpperCase() + activeMode.slice(1)} mode`)
+      ),
+      // Right side - coordinates
       React.createElement('span', { style: { color: '#8e8e93' } }, 
         cursorCoords 
           ? `${cursorCoords.lat.toFixed(6)}, ${cursorCoords.lng.toFixed(6)}`
