@@ -29,9 +29,10 @@ const MODES = {
 
 // ── Per-feature-type color palette ──
 // tentativeFill/tentativeLine are optional overrides for drawing preview
+// NFZ, searchZone, and geofence have invisible fills - their 3D walls are rendered separately
 const FEATURE_COLORS = {
-  nfz:         { fill: [220, 53, 69, 90],   line: [220, 53, 69, 220]  },
-  searchZone:  { fill: [59, 130, 246, 80],  line: [59, 130, 246, 220] },
+  nfz:         { fill: [0, 0, 0, 0],         line: [0, 0, 0, 0],         tentativeFill: [220, 53, 69, 60], tentativeLine: [220, 53, 69, 240] },
+  searchZone:  { fill: [0, 0, 0, 0],         line: [0, 0, 0, 0],         tentativeFill: [59, 130, 246, 60], tentativeLine: [59, 130, 246, 240] },
   airRoute:    { fill: [16, 185, 129, 80],  line: [16, 185, 129, 220] },  // Emerald green
   groundRoute: { fill: [139, 90, 43, 80],   line: [139, 90, 43, 220] },   // Brown/tan for ground
   searchPoint: { fill: [59, 130, 246, 200], line: [59, 130, 246, 255] },
@@ -727,10 +728,10 @@ function MapComponent() {
         if (type === 'airRoute' || type === 'groundRoute') return [0, 0, 0, 0];
         return (FEATURE_COLORS[type] || FEATURE_COLORS._default).line;
       },
-      getLineWidth: 2,
+      getLineWidth: 2,  // 2 pixels - constant screen-space thickness
+      lineWidthUnits: 'pixels',  // WHY: Ensures all shape borders stay same thickness at all zoom levels
       getPointRadius: 6,
       pointRadiusMinPixels: 4,
-      lineWidthMinPixels: 2,
 
       getTentativeFillColor: tentativeColors.fill,
       getTentativeLineColor: tentativeColors.line,
@@ -754,192 +755,118 @@ function MapComponent() {
       } : {}
     });
 
-    // WHY: Geofence curtain layer creates a 3D extruded "fence" effect.
-    // Instead of relying on PolygonLayer extrusion (which always draws a top cap),
-    // we generate actual wall geometry as vertical quads for each edge.
-    const geofenceFeatures = dataWithElevation.features.filter(f => f.properties?.featureType === 'geofence');
-    
-    // Build a map of geofence feature indices for picking
-    const geofenceIndexMap = new Map();
+    // ── Unified 3D Zoned Layers (Geofence, NFZ, SearchZone) ──
+    const zonedFeatures = dataWithElevation.features.filter(f => 
+      ['geofence', 'nfz', 'searchZone'].includes(f.properties?.featureType)
+    );
+
+    const zonedIndexMap = new Map();
     dataWithElevation.features.forEach((f, idx) => {
-      if (f.properties?.featureType === 'geofence') {
-        geofenceIndexMap.set(f, idx);
+      if (['geofence', 'nfz', 'searchZone'].includes(f.properties?.featureType)) {
+        zonedIndexMap.set(f, idx);
       }
     });
-    
-    // Transform polygon outlines into vertical wall segments
+
+    // Color definitions per feature type [R, G, B, A]
+    // Wall opacity matches original fill colors for consistent appearance
+    const STYLE_MAP = {
+      geofence:   { wall: [255, 165, 0, 100], border: [255, 165, 0, 255], cap: null }, // No top cap
+      nfz:        { wall: [220, 53, 69, 90],  border: [220, 53, 69, 255], cap: [220, 53, 69, 60] },
+      searchZone: { wall: [59, 130, 246, 80], border: [59, 130, 246, 255], cap: [59, 130, 246, 50] }
+    };
+
     const wallSegments = [];
-    
-    geofenceFeatures.forEach(feature => {
+    const borderData = [];
+    const ceilingData = [];
+
+    zonedFeatures.forEach(feature => {
       const coords = feature.geometry.coordinates[0] || feature.geometry.coordinates;
       if (!Array.isArray(coords) || coords.length < 2) return;
-      
-      const featureIndex = geofenceIndexMap.get(feature);
-      const wallHeight = feature.properties?.altitude || 150; // Per-feature altitude
-      
-      // For each edge of the polygon, create a vertical wall quad
-      for (let i = 0; i < coords.length - 1; i++) {
-        const p1 = coords[i];
-        const p2 = coords[i + 1];
-        const baseZ1 = p1[2] || 0;
-        const baseZ2 = p2[2] || 0;
-        
-        // Create a vertical quad (4 corners forming a wall segment)
-        // Order: bottom-left, bottom-right, top-right, top-left
-        wallSegments.push({
+
+      const type = feature.properties?.featureType;
+      const featureIndex = zonedIndexMap.get(feature);
+      const style = STYLE_MAP[type];
+
+      // Determine elevation profile
+      let baseOffset = 0;
+      let topOffset = feature.properties?.altitude || (type === 'geofence' ? 150 : 100);
+      if (type === 'nfz') {
+        baseOffset = feature.properties?.floor || 0;
+        topOffset = feature.properties?.ceiling || 400;
+      }
+
+      // 1. Build Border Path (Top edge)
+      borderData.push({
+        featureIndex,
+        color: style.border,
+        path: coords.map(c => [c[0], c[1], (c[2] || 0) + topOffset])
+      });
+
+      // 2. Build Top Cap / Ceiling (If applicable)
+      if (style.cap) {
+        ceilingData.push({
           featureIndex,
-          polygon: [
-            [p1[0], p1[1], baseZ1],           // bottom-left
-            [p2[0], p2[1], baseZ2],           // bottom-right
-            [p2[0], p2[1], baseZ2 + wallHeight], // top-right
-            [p1[0], p1[1], baseZ1 + wallHeight]  // top-left
-          ]
+          color: style.cap,
+          polygon: coords.map(c => [c[0], c[1], (c[2] || 0) + topOffset])
         });
       }
-    });
-    
-    const curtainLayer = new SolidPolygonLayer({
-      id: 'geofence-curtain',
-      data: wallSegments,
-      _full3d: true, // WHY: Enable full 3D mode to properly render vertical wall geometry
-      getPolygon: d => d.polygon,
-      getFillColor: [255, 165, 0, 100], // Translucent Orange for walls
-      pickable: true, // Enable picking on walls for geofence selection
-      // WHY: Always enable depth for proper 3D rendering
-      parameters: {
-        depthWriteEnabled: true,
-        depthCompare: 'less-equal'
-      }
-    });
 
-    // WHY: PathLayer draws crisp border lines at the top of the curtain.
-    // Separate from PolygonLayer wireframe for better visual control.
-    // Add featureIndex for picking
-    const geofenceBorderData = geofenceFeatures.map(f => ({
-      feature: f,
-      featureIndex: geofenceIndexMap.get(f)
-    }));
-    
-    const curtainBorderLayer = new PathLayer({
-      id: 'geofence-curtain-border',
-      data: geofenceBorderData,
-      getPath: d => {
-        // Get the outer ring of the polygon and add elevation
-        const coords = d.feature.geometry.coordinates[0] || d.feature.geometry.coordinates;
-        const wallHeight = d.feature.properties?.altitude || 150;
-        return coords.map(c => [c[0], c[1], (c[2] || 0) + wallHeight]); // Add curtain height
-      },
-      getColor: [255, 165, 0, 255],
-      getWidth: 3,
-      widthMinPixels: 2,
-      pickable: true, // Enable picking on border for geofence selection
-      pickingRadius: 15, // Expand picking area for easier clicking
-      parameters: {
-        depthWriteEnabled: true,
-        depthCompare: 'less-equal'
-      }
-    });
+      // 3. Build Wall Quads
+      const isClosed = coords[0][0] === coords[coords.length - 1][0] && 
+                       coords[0][1] === coords[coords.length - 1][1];
+      const loopCount = isClosed ? coords.length - 1 : coords.length;
 
-    // ── NFZ 3D Layers (Floor + Ceiling) ──
-    const nfzFeatures = dataWithElevation.features.filter(f => f.properties?.featureType === 'nfz');
-    const nfzIndexMap = new Map();
-    dataWithElevation.features.forEach((f, idx) => {
-      if (f.properties?.featureType === 'nfz') {
-        nfzIndexMap.set(f, idx);
-      }
-    });
-
-    // NFZ ceiling layer (top)
-    const nfzCeilingData = nfzFeatures.map(f => ({
-      feature: f,
-      featureIndex: nfzIndexMap.get(f)
-    }));
-
-    const nfzCeilingLayer = new SolidPolygonLayer({
-      id: 'nfz-ceiling',
-      data: nfzCeilingData,
-      getPolygon: d => {
-        const coords = d.feature.geometry.coordinates[0] || d.feature.geometry.coordinates;
-        const ceiling = d.feature.properties?.ceiling || 400;
-        return coords.map(c => [c[0], c[1], (c[2] || 0) + ceiling]);
-      },
-      getFillColor: [220, 53, 69, 60],
-      pickable: true,
-      parameters: {
-        depthWriteEnabled: true,
-        depthCompare: 'less-equal'
-      }
-    });
-
-    // NFZ walls (vertical sides from floor to ceiling)
-    const nfzWallSegments = [];
-    nfzFeatures.forEach(feature => {
-      const coords = feature.geometry.coordinates[0] || feature.geometry.coordinates;
-      if (!Array.isArray(coords) || coords.length < 2) return;
-      
-      const featureIndex = nfzIndexMap.get(feature);
-      const floor = feature.properties?.floor || 0;
-      const ceiling = feature.properties?.ceiling || 400;
-      
-      for (let i = 0; i < coords.length - 1; i++) {
+      for (let i = 0; i < loopCount; i++) {
         const p1 = coords[i];
-        const p2 = coords[i + 1];
-        const baseZ1 = (p1[2] || 0) + floor;
-        const baseZ2 = (p2[2] || 0) + floor;
-        
-        nfzWallSegments.push({
+        const p2 = coords[(i + 1) % coords.length];
+        const baseZ1 = (p1[2] || 0) + baseOffset;
+        const baseZ2 = (p2[2] || 0) + baseOffset;
+        const topZ1 = (p1[2] || 0) + topOffset;
+        const topZ2 = (p2[2] || 0) + topOffset;
+
+        wallSegments.push({
           featureIndex,
+          color: style.wall,
           polygon: [
             [p1[0], p1[1], baseZ1],
             [p2[0], p2[1], baseZ2],
-            [p2[0], p2[1], (p2[2] || 0) + ceiling],
-            [p1[0], p1[1], (p1[2] || 0) + ceiling]
+            [p2[0], p2[1], topZ2],
+            [p1[0], p1[1], topZ1]
           ]
         });
       }
     });
 
-    const nfzWallLayer = new SolidPolygonLayer({
-      id: 'nfz-walls',
-      data: nfzWallSegments,
+    // ── Instantiate Unified Layers ──
+    const unifiedWallLayer = new SolidPolygonLayer({
+      id: 'unified-walls',
+      data: wallSegments,
       _full3d: true,
       getPolygon: d => d.polygon,
-      getFillColor: [220, 53, 69, 40],
+      getFillColor: d => d.color,
       pickable: true,
-      parameters: {
-        depthWriteEnabled: true,
-        depthCompare: 'less-equal'
-      }
+      parameters: { depthWriteEnabled: true, depthCompare: 'less-equal', cull: false }
     });
 
-    // ── Search Zone and Route 3D Layers ──
-    const searchZoneFeatures = dataWithElevation.features.filter(f => f.properties?.featureType === 'searchZone');
-    const searchZoneIndexMap = new Map();
-    dataWithElevation.features.forEach((f, idx) => {
-      if (f.properties?.featureType === 'searchZone') {
-        searchZoneIndexMap.set(f, idx);
-      }
+    const unifiedBorderLayer = new PathLayer({
+      id: 'unified-borders',
+      data: borderData,
+      getPath: d => d.path,
+      getColor: d => d.color,
+      getWidth: 3,
+      widthUnits: 'pixels',
+      pickable: true,
+      pickingRadius: 15,
+      parameters: { depthWriteEnabled: true, depthCompare: 'less-equal' }
     });
 
-    const searchZoneCeilingData = searchZoneFeatures.map(f => ({
-      feature: f,
-      featureIndex: searchZoneIndexMap.get(f)
-    }));
-
-    const searchZoneCeilingLayer = new SolidPolygonLayer({
-      id: 'searchZone-ceiling',
-      data: searchZoneCeilingData,
-      getPolygon: d => {
-        const coords = d.feature.geometry.coordinates[0] || d.feature.geometry.coordinates;
-        const altitude = d.feature.properties?.altitude || 100;
-        return coords.map(c => [c[0], c[1], (c[2] || 0) + altitude]);
-      },
-      getFillColor: [59, 130, 246, 40],
+    const unifiedCeilingLayer = new SolidPolygonLayer({
+      id: 'unified-ceilings',
+      data: ceilingData,
+      getPolygon: d => d.polygon,
+      getFillColor: d => d.color,
       pickable: true,
-      parameters: {
-        depthWriteEnabled: true,
-        depthCompare: 'less-equal'
-      }
+      parameters: { depthWriteEnabled: true, depthCompare: 'less-equal' }
     });
 
     // Air Route 3D layer (elevated path)
@@ -965,8 +892,8 @@ function MapComponent() {
         return coords.map(c => [c[0], c[1], (c[2] || 0) + altitude]);
       },
       getColor: [16, 185, 129, 255],  // Emerald green
-      getWidth: 4,
-      widthMinPixels: 3,
+      getWidth: 4,  // 4 pixels - constant screen-space thickness
+      widthUnits: 'pixels',  // WHY: Ensures line stays same thickness at all zoom levels
       pickable: true,
       parameters: {
         depthWriteEnabled: true,
@@ -1031,8 +958,8 @@ function MapComponent() {
       data: groundRouteData,
       getPath: d => d.densePath,
       getColor: [139, 90, 43, 255],  // Brown/tan for ground
-      getWidth: 4,  // Same as air route
-      widthMinPixels: 3,  // Same as air route - constant screen pixels
+      getWidth: 4,  // 4 pixels - constant screen-space thickness
+      widthUnits: 'pixels',  // WHY: Ensures line stays same thickness at all zoom levels
       pickable: true,
       // WHY: depthCompare 'always' renders on top of terrain like a painted overlay
       parameters: {
@@ -1042,7 +969,14 @@ function MapComponent() {
     });
 
     overlay.setProps({
-      layers: [curtainLayer, curtainBorderLayer, nfzCeilingLayer, nfzWallLayer, searchZoneCeilingLayer, airRouteElevatedLayer, groundRouteLayer, editableLayer],
+      layers: [
+        unifiedWallLayer, 
+        unifiedBorderLayer, 
+        unifiedCeilingLayer, 
+        airRouteElevatedLayer, 
+        groundRouteLayer, 
+        editableLayer
+      ],
       // WHY: Sync internal deck.gl cursor state with our active mode
       getCursor: () => (activeMode !== 'view' ? (activeMode === 'modify' ? 'grab' : 'crosshair') : 'auto')
     });
