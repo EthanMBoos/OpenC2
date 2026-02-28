@@ -837,9 +837,6 @@ function MapComponent() {
       parameters: {
         depthWriteEnabled: true,
         depthCompare: 'less-equal'
-      },
-      transitions: {
-        getPath: 400
       }
     });
 
