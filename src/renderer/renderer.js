@@ -84,7 +84,7 @@ function MapComponent() {
     features: []
   });
   const [selectedFeatureIndexes, setSelectedFeatureIndexes] = React.useState([]);
-  const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0, lngLat: null });
+  const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0, lngLat: null, featureIndex: null });
   const [mapIdleToken, setMapIdleToken] = React.useState(0);
   const [showMissionFlyout, setShowMissionFlyout] = React.useState(false);
   const [cursorCoords, setCursorCoords] = React.useState(null);
@@ -210,12 +210,35 @@ function MapComponent() {
     }
   }, [activeMode]);
 
-  // ── 3. Handle Complex Events (Double Clicks & Keydowns) ──
+  // ── 3. Handle Complex Events (Clicks, Right-clicks, Double Clicks & Keydowns) ──
   React.useEffect(() => {
     const container = mapContainerRef.current;
     const map = mapRef.current;
     if (!container || !map) return;
 
+    // Helper to pick a feature at screen coordinates
+    const pickFeatureAt = (x, y) => {
+      const overlay = deckOverlayRef.current;
+      if (!overlay) return null;
+      try {
+        const picked = overlay.pickObject({ x, y });
+        if (picked) {
+          // Handle wall segment picks (geofence curtain)
+          if (picked.object && picked.object.featureIndex != null) {
+            return picked.object.featureIndex;
+          }
+          // Handle regular feature picks (EditableGeoJsonLayer)
+          if (picked.index != null && picked.index >= 0) {
+            return picked.index;
+          }
+        }
+      } catch (err) {
+        console.warn('Deck.gl pickObject failed:', err);
+      }
+      return null;
+    };
+
+    // Handle double-click: finish drawing OR enter modify mode on feature
     const handleDblClick = (e) => {
       try {
         const mode = activeMode;
@@ -223,91 +246,123 @@ function MapComponent() {
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
 
-      // --- SCENARIO A: User is actively drawing a shape ---
-      if (mode !== 'view' && mode !== 'modify') {
-        e.preventDefault();
-        e.stopPropagation();
+        // Scenario A: Actively drawing a shape - finish it
+        if (mode !== 'view' && mode !== 'modify') {
+          e.preventDefault();
+          e.stopPropagation();
 
-        const overlay = deckOverlayRef.current;
-        if (overlay && overlay._deck) {
-          // WHY: MapboxOverlay intentionally swallows dblclicks. EditableGeoJsonLayer 
-          // never knows the user tried to finish the line/polygon. We bypass the overlay 
-          // and forcefully inject a synthetic dblclick directly into Deck.gl's private event bus.
-          try {
-            overlay._deck._onEvent({
-              type: 'dblclick',
-              offsetCenter: { x, y },
-              srcEvent: e
-            });
-
-            // Bulletproof fallback for specific DrawLineStringMode bugs
-            overlay._deck._onEvent({
-              type: 'keyup',
-              key: 'Enter',
-              srcEvent: e
-            });
-          } catch (err) {
-            console.warn('Deck.gl event injection failed:', err);
-          }
-        }
-        return; // Prevent the menu from opening
-      }
-      
-      // --- SCENARIO B: User is in View/Modify mode ---
-      if (drawJustFinishedRef.current) {
-        drawJustFinishedRef.current = false;
-        // Don't process this double-click further - it was used to finish drawing
-        // The property panel will be shown by the useEffect
-        return;
-      }
-
-      const overlay = deckOverlayRef.current;
-      if (overlay) {
-        // Check if user double-clicked an existing shape to modify it
-        try {
-          const picked = overlay.pickObject({ x, y });
-          if (picked) {
-            // Handle wall segment picks (geofence curtain)
-            if (picked.object && picked.object.featureIndex != null) {
-              const idx = picked.object.featureIndex;
-              setSelectedFeatureIndexes([idx]);
-              setActiveMode('modify');
-              setShowMissionFlyout(true);
-              return;
-            }
-            // Handle regular feature picks (EditableGeoJsonLayer)
-            if (picked.index != null && picked.index >= 0) {
-              const idx = picked.index;
-              setSelectedFeatureIndexes([idx]);
-              setActiveMode('modify');
-              setShowMissionFlyout(true);
-              return;
+          const overlay = deckOverlayRef.current;
+          if (overlay && overlay._deck) {
+            try {
+              overlay._deck._onEvent({
+                type: 'dblclick',
+                offsetCenter: { x, y },
+                srcEvent: e
+              });
+              overlay._deck._onEvent({
+                type: 'keyup',
+                key: 'Enter',
+                srcEvent: e
+              });
+            } catch (err) {
+              console.warn('Deck.gl event injection failed:', err);
             }
           }
-        } catch (err) {
-          console.warn('Deck.gl pickObject failed:', err);
+          return;
         }
-      }
 
-      // User double-clicked empty space: exit modify mode or open menu
-      if (activeMode === 'modify') {
-        setActiveMode('view');
-        setSelectedFeatureIndexes([]);
-        return;
-      }
-
-      // User double-clicked empty space: Open the mission menu
-      const lngLat = map.unproject([x, y]);
-      e.preventDefault();
-      e.stopPropagation();
-      setMissionMenu({ visible: true, x: e.clientX, y: e.clientY, lngLat: [lngLat.lng, lngLat.lat] });
+        // Scenario B: In view mode - double-click a feature to enter modify mode
+        if (mode === 'view') {
+          const featureIdx = pickFeatureAt(x, y);
+          if (featureIdx !== null) {
+            e.preventDefault();
+            e.stopPropagation();
+            setSelectedFeatureIndexes([featureIdx]);
+            setActiveMode('modify');
+            setShowMissionFlyout(true);
+          }
+        }
       } catch (err) {
         console.error('Double-click handler error:', err);
       }
     };
 
-    const handleClick = () => {
-      setMissionMenu((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+    // Handle right-click: always show context menu
+    const handleContextMenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      try {
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        // If currently drawing, cancel the drawing and return to view mode
+        if (activeMode !== 'view' && activeMode !== 'modify') {
+          setActiveMode('view');
+          setSelectedFeatureIndexes([]);
+          return;
+        }
+
+        // Check if right-clicked on a feature
+        const featureIdx = pickFeatureAt(x, y);
+        const lngLat = map.unproject([x, y]);
+
+        if (featureIdx !== null) {
+          // Right-clicked on a feature - show feature context menu
+          setSelectedFeatureIndexes([featureIdx]);
+          setMissionMenu({ 
+            visible: true, 
+            x: e.clientX, 
+            y: e.clientY, 
+            lngLat: [lngLat.lng, lngLat.lat],
+            featureIndex: featureIdx 
+          });
+        } else {
+          // Right-clicked on empty space - show add element menu
+          if (activeMode === 'modify') {
+            setActiveMode('view');
+            setSelectedFeatureIndexes([]);
+          }
+          setMissionMenu({ 
+            visible: true, 
+            x: e.clientX, 
+            y: e.clientY, 
+            lngLat: [lngLat.lng, lngLat.lat],
+            featureIndex: null 
+          });
+        }
+      } catch (err) {
+        console.error('Right-click handler error:', err);
+      }
+    };
+
+    // Handle single click: select feature or deselect
+    const handleClick = (e) => {
+      // Close menu if visible
+      if (missionMenu.visible) {
+        setMissionMenu(prev => ({ ...prev, visible: false }));
+        return;
+      }
+
+      // Only handle clicks when in view mode (not drawing or modifying)
+      if (activeMode !== 'view') return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      const featureIdx = pickFeatureAt(x, y);
+      if (featureIdx !== null) {
+        // Single-click on feature: select it (but don't enter modify mode)
+        setSelectedFeatureIndexes([featureIdx]);
+        setShowMissionFlyout(true);
+      } else {
+        // Single-click on empty space: deselect
+        if (selectedFeatureIndexes.length > 0) {
+          setSelectedFeatureIndexes([]);
+        }
+      }
     };
 
     const handleKeyDown = (e) => {
@@ -338,18 +393,20 @@ function MapComponent() {
       }
     };
 
-    // WHY: We bind to the native DOM element to ensure we catch the double-click 
+    // WHY: We bind to the native DOM element to ensure we catch events
     // before the MapLibre canvas or WebGL context has a chance to call stopPropagation()
     container.addEventListener('dblclick', handleDblClick);
-    window.addEventListener('click', handleClick);
+    container.addEventListener('contextmenu', handleContextMenu);
+    container.addEventListener('click', handleClick);
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
       container.removeEventListener('dblclick', handleDblClick);
-      window.removeEventListener('click', handleClick);
+      container.removeEventListener('contextmenu', handleContextMenu);
+      container.removeEventListener('click', handleClick);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [activeMode, selectedFeatureIndexes, showMissionFlyout, geoJson]);
+  }, [activeMode, selectedFeatureIndexes, showMissionFlyout, geoJson, missionMenu.visible]);
 
   // ── 4. Render Deck.gl Layers ──
   React.useEffect(() => {
@@ -1050,7 +1107,7 @@ function MapComponent() {
         geoJson.features.length === 0
           ? React.createElement('div', {
               style: { color: '#555', fontSize: '11px', padding: '8px 0' }
-            }, 'No elements. Double-click map to add.')
+            }, 'No elements. Right-click map to add.')
           : geoJson.features.map((f, i) => {
               const isSelected = selectedFeatureIndexes.includes(i);
               const featureType = f.properties?.featureType;
@@ -1249,7 +1306,7 @@ function MapComponent() {
             })
       ),
     
-    // Mission editor menu (context menu on double-click)
+    // Context menu (right-click)
     missionMenu.visible && React.createElement('div', {
       style: {
         position: 'fixed',
@@ -1268,20 +1325,13 @@ function MapComponent() {
       },
       onClick: (e) => e.stopPropagation()
     },
-      React.createElement('div', {
-        style: { padding: '8px 14px', color: '#98989d', fontSize: '11px', fontWeight: 500 }
-      }, 'Add Element'),
-      ['nfz', 'searchZone', 'geofence', 'airRoute', 'groundRoute', 'searchPoint'].map((key) => {
-        const menuColors = {
-          nfz: '#dc3545',
-          searchZone: '#3b82f6',
-          geofence: '#ffa500',
-          airRoute: '#10b981',
-          groundRoute: '#8b5a2b',
-          searchPoint: '#3b82f6'
-        };
-        return React.createElement('div', {
-          key,
+      // Feature context menu (when right-clicking on a feature)
+      missionMenu.featureIndex !== null ? React.createElement(React.Fragment, null,
+        React.createElement('div', {
+          style: { padding: '8px 14px', color: '#98989d', fontSize: '11px', fontWeight: 500 }
+        }, `Element [${String(missionMenu.featureIndex).padStart(2, '0')}]`),
+        // Edit option
+        React.createElement('div', {
           style: {
             padding: '8px 14px',
             color: '#ccc',
@@ -1294,40 +1344,153 @@ function MapComponent() {
             fontFamily: SYSTEM_FONT
           },
           onMouseEnter: (e) => { 
-            e.currentTarget.style.background = 'rgba(100, 116, 139, 0.2)'; 
-            e.currentTarget.style.borderLeftColor = menuColors[key];
+            e.currentTarget.style.background = 'rgba(100, 116, 139, 0.2)';
+            e.currentTarget.style.borderLeftColor = '#64748b';
             e.currentTarget.style.color = '#fff';
           },
           onMouseLeave: (e) => { 
-            e.currentTarget.style.background = 'transparent'; 
+            e.currentTarget.style.background = 'transparent';
             e.currentTarget.style.borderLeftColor = 'transparent';
             e.currentTarget.style.color = '#ccc';
           },
           onClick: () => {
-            const clickLngLat = missionMenu.lngLat;
-            setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null });
-
-            if (key === 'searchPoint' && clickLngLat) {
-              const newFeature = {
-                type: 'Feature',
-                geometry: { type: 'Point', coordinates: clickLngLat },
-                properties: { featureType: 'searchPoint' }
-              };
-              setGeoJson(prev => ({
-                ...prev,
-                features: [...prev.features, newFeature]
-              }));
-              setSelectedFeatureIndexes([geoJson.features.length]);
-              setActiveMode('view');
-              setShowMissionFlyout(true);
-            } else {
-              setActiveMode(key);
-              setSelectedFeatureIndexes([]);
-              setShowMissionFlyout(true);
-            }
+            const idx = missionMenu.featureIndex;
+            setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null, featureIndex: null });
+            setSelectedFeatureIndexes([idx]);
+            setActiveMode('modify');
+            setShowMissionFlyout(true);
           }
-        }, MODES[key].label);
-      })
+        }, '\u270F\uFE0F Edit Shape'),
+        // Properties option
+        React.createElement('div', {
+          style: {
+            padding: '8px 14px',
+            color: '#ccc',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            transition: 'all 0.15s',
+            borderLeft: '2px solid transparent',
+            fontFamily: SYSTEM_FONT
+          },
+          onMouseEnter: (e) => { 
+            e.currentTarget.style.background = 'rgba(100, 116, 139, 0.2)';
+            e.currentTarget.style.borderLeftColor = '#3b82f6';
+            e.currentTarget.style.color = '#fff';
+          },
+          onMouseLeave: (e) => { 
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.borderLeftColor = 'transparent';
+            e.currentTarget.style.color = '#ccc';
+          },
+          onClick: () => {
+            const idx = missionMenu.featureIndex;
+            setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null, featureIndex: null });
+            setSelectedFeatureIndexes([idx]);
+            setShowMissionFlyout(true);
+          }
+        }, '\u2699\uFE0F Properties'),
+        // Divider
+        React.createElement('div', {
+          style: { height: '1px', background: '#48484a', margin: '4px 0' }
+        }),
+        // Delete option
+        React.createElement('div', {
+          style: {
+            padding: '8px 14px',
+            color: '#e05561',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            transition: 'all 0.15s',
+            borderLeft: '2px solid transparent',
+            fontFamily: SYSTEM_FONT
+          },
+          onMouseEnter: (e) => { 
+            e.currentTarget.style.background = 'rgba(220, 83, 96, 0.15)';
+            e.currentTarget.style.borderLeftColor = '#dc3545';
+          },
+          onMouseLeave: (e) => { 
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.borderLeftColor = 'transparent';
+          },
+          onClick: () => {
+            const idx = missionMenu.featureIndex;
+            setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null, featureIndex: null });
+            setGeoJson(prev => ({
+              ...prev,
+              features: prev.features.filter((_, i) => i !== idx)
+            }));
+            setSelectedFeatureIndexes([]);
+            setActiveMode('view');
+          }
+        }, '\u{1F5D1}\uFE0F Delete')
+      ) :
+      // Add element menu (when right-clicking on empty space)
+      React.createElement(React.Fragment, null,
+        React.createElement('div', {
+          style: { padding: '8px 14px', color: '#98989d', fontSize: '11px', fontWeight: 500 }
+        }, 'Add Element'),
+        ['nfz', 'searchZone', 'geofence', 'airRoute', 'groundRoute', 'searchPoint'].map((key) => {
+          const menuColors = {
+            nfz: '#dc3545',
+            searchZone: '#3b82f6',
+            geofence: '#ffa500',
+            airRoute: '#10b981',
+            groundRoute: '#8b5a2b',
+            searchPoint: '#3b82f6'
+          };
+          return React.createElement('div', {
+            key,
+            style: {
+              padding: '8px 14px',
+              color: '#ccc',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              transition: 'all 0.15s',
+              borderLeft: '2px solid transparent',
+              fontFamily: SYSTEM_FONT
+            },
+            onMouseEnter: (e) => { 
+              e.currentTarget.style.background = 'rgba(100, 116, 139, 0.2)'; 
+              e.currentTarget.style.borderLeftColor = menuColors[key];
+              e.currentTarget.style.color = '#fff';
+            },
+            onMouseLeave: (e) => { 
+              e.currentTarget.style.background = 'transparent'; 
+              e.currentTarget.style.borderLeftColor = 'transparent';
+              e.currentTarget.style.color = '#ccc';
+            },
+            onClick: () => {
+              const clickLngLat = missionMenu.lngLat;
+              setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null, featureIndex: null });
+
+              if (key === 'searchPoint' && clickLngLat) {
+                const newFeature = {
+                  type: 'Feature',
+                  geometry: { type: 'Point', coordinates: clickLngLat },
+                  properties: { featureType: 'searchPoint' }
+                };
+                setGeoJson(prev => ({
+                  ...prev,
+                  features: [...prev.features, newFeature]
+                }));
+                setSelectedFeatureIndexes([geoJson.features.length]);
+                setActiveMode('view');
+                setShowMissionFlyout(true);
+              } else {
+                setActiveMode(key);
+                setSelectedFeatureIndexes([]);
+                setShowMissionFlyout(true);
+              }
+            }
+          }, MODES[key].label);
+        })
+      )
     )
     ), // End mapViewportStyle div
 
