@@ -101,7 +101,6 @@ function MapComponent() {
   });
   const [selectedFeatureIndexes, setSelectedFeatureIndexes] = React.useState([]);
   const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0, lngLat: null, featureIndex: null });
-  const [mapIdleToken, setMapIdleToken] = React.useState(0);
   const [showMissionFlyout, setShowMissionFlyout] = React.useState(false);
   const [cursorCoords, setCursorCoords] = React.useState(null);
   const [showHelpOverlay, setShowHelpOverlay] = React.useState(false);
@@ -163,26 +162,6 @@ function MapComponent() {
       map.removeControl(deckOverlay);
       deckOverlay.finalize();
       map.remove();
-    };
-  }, []);
-
-  // ── Listen to map idle event for terrain tile loading ──
-  React.useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    const handleIdle = () => {
-      // Only trigger a geometry rebuild if terrain is enabled 
-      // (This prevents unnecessary React updates in flat 2D mode)
-      if (terrainEnabledRef.current) {
-        setMapIdleToken(prev => prev + 1);
-      }
-    };
-
-    map.on('idle', handleIdle);
-
-    return () => {
-      map.off('idle', handleIdle);
     };
   }, []);
 
@@ -623,7 +602,6 @@ function MapComponent() {
     const currentHash = computeGeometryHash(geoJson);
     
     // Skip if geometry hasn't changed and we already have elevated data
-    // mapIdleToken changes mean terrain tiles may have updated, so resample
     const geometryChanged = currentHash !== lastGeometryHashRef.current;
     const needsResampling = geometryChanged || (terrainEnabled && !elevatedGeoJson);
     
@@ -698,7 +676,7 @@ function MapComponent() {
       .finally(() => {
         terrainSamplingInProgressRef.current = false;
       });
-  }, [geoJson, terrainEnabled, mapIdleToken]);
+  }, [geoJson, terrainEnabled]);
 
   // ── 4. Render Deck.gl Layers ──
   React.useEffect(() => {
