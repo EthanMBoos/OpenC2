@@ -5,6 +5,8 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 import { MapboxOverlay } from '@deck.gl/mapbox';
+import { sampleTerrainAsync, clearTerrainCache } from './terrainSampler.js';
+import { computeGeometryHash } from './terrainCache.js';
 import { PolygonLayer, PathLayer, SolidPolygonLayer } from '@deck.gl/layers';
 import {
   EditableGeoJsonLayer,
@@ -103,6 +105,14 @@ function MapComponent() {
   const [showMissionFlyout, setShowMissionFlyout] = React.useState(false);
   const [cursorCoords, setCursorCoords] = React.useState(null);
   const [showHelpOverlay, setShowHelpOverlay] = React.useState(false);
+  
+  // ── Async Terrain Sampling State ──
+  // WHY: Pre-computed 3D coordinates from async terrain sampling.
+  // This moves terrain queries off the render path for better performance.
+  const [elevatedGeoJson, setElevatedGeoJson] = React.useState(null);
+  const [groundRoutePathsCache, setGroundRoutePathsCache] = React.useState([]);
+  const lastGeometryHashRef = React.useRef(null);
+  const terrainSamplingInProgressRef = React.useRef(false);
 
   // ── Style Constants ──
   const FRAME_WIDTH = '20px';
@@ -602,6 +612,94 @@ function MapComponent() {
     };
   }, [activeMode, selectedFeatureIndexes, showMissionFlyout, geoJson, missionMenu.visible, showHelpOverlay]);
 
+  // ── 3.5 Async Terrain Sampling ──
+  // WHY: Move terrain elevation queries off the render path.
+  // Only recalculate when geometry changes or terrain tiles update.
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    // Compute hash of current 2D geometry
+    const currentHash = computeGeometryHash(geoJson);
+    
+    // Skip if geometry hasn't changed and we already have elevated data
+    // mapIdleToken changes mean terrain tiles may have updated, so resample
+    const geometryChanged = currentHash !== lastGeometryHashRef.current;
+    const needsResampling = geometryChanged || (terrainEnabled && !elevatedGeoJson);
+    
+    // WHY: When geometry hasn't changed but properties have (e.g., altitude edit),
+    // merge the new properties into the cached elevated features without resampling.
+    if (!needsResampling && elevatedGeoJson && terrainEnabled) {
+      // Check if properties have changed by comparing feature count and properties
+      const propsNeedUpdate = geoJson.features.some((f, i) => {
+        const elevatedFeature = elevatedGeoJson.features[i];
+        if (!elevatedFeature) return true;
+        // Compare stringified properties (quick shallow comparison)
+        return JSON.stringify(f.properties) !== JSON.stringify(elevatedFeature.properties);
+      }) || geoJson.features.length !== elevatedGeoJson.features.length;
+      
+      if (propsNeedUpdate) {
+        // Merge new properties into elevated features without resampling coordinates
+        setElevatedGeoJson(prev => ({
+          ...prev,
+          features: prev.features.map((elevatedFeat, i) => {
+            const sourceFeat = geoJson.features[i];
+            if (!sourceFeat) return elevatedFeat;
+            return {
+              ...elevatedFeat,
+              properties: { ...sourceFeat.properties }
+            };
+          })
+        }));
+        // Also update ground route paths with new properties
+        setGroundRoutePathsCache(prev => prev.map(item => {
+          const sourceFeature = geoJson.features.find(
+            f => f.properties?.featureType === 'groundRoute' && 
+            JSON.stringify(f.geometry?.coordinates) === JSON.stringify(item.feature.geometry?.coordinates)
+          );
+          if (sourceFeature) {
+            return { ...item, feature: { ...item.feature, properties: { ...sourceFeature.properties } } };
+          }
+          return item;
+        }));
+      }
+      return;
+    }
+
+    // Prevent concurrent sampling operations
+    if (terrainSamplingInProgressRef.current) {
+      return;
+    }
+
+    // Clear cache when terrain is disabled
+    if (!terrainEnabled) {
+      clearTerrainCache();
+      setElevatedGeoJson(null);
+      setGroundRoutePathsCache([]);
+      lastGeometryHashRef.current = null;
+      return;
+    }
+
+    // Start async terrain sampling
+    terrainSamplingInProgressRef.current = true;
+    
+    sampleTerrainAsync(geoJson, map, terrainEnabled)
+      .then(({ elevatedFeatures, groundRoutePaths }) => {
+        setElevatedGeoJson({
+          type: 'FeatureCollection',
+          features: elevatedFeatures
+        });
+        setGroundRoutePathsCache(groundRoutePaths);
+        lastGeometryHashRef.current = currentHash;
+      })
+      .catch(err => {
+        console.warn('Terrain sampling failed:', err);
+      })
+      .finally(() => {
+        terrainSamplingInProgressRef.current = false;
+      });
+  }, [geoJson, terrainEnabled, mapIdleToken]);
+
   // ── 4. Render Deck.gl Layers ──
   React.useEffect(() => {
     const overlay = deckOverlayRef.current;
@@ -616,46 +714,10 @@ function MapComponent() {
       line: colorDef.tentativeLine || colorDef.line
     };
 
-    // WHY: Query terrain elevation at each coordinate so geometry follows terrain surface.
-    // Without this, geometries render at sea level and appear to slide around.
-    const getTerrainElevation = (coord) => {
-      if (!terrainEnabled || !map.getTerrain()) return 0;
-      try {
-        const elev = map.queryTerrainElevation({ lng: coord[0], lat: coord[1] });
-        return (elev || 0) + 10; // +10m offset to float above terrain
-      } catch {
-        return 10;
-      }
-    };
-
-    // WHY: Transform 2D coordinates to 3D by adding terrain elevation as z-coordinate.
-    // This makes geometry follow the terrain surface instead of rendering at sea level.
-    const addElevationToCoords = (coords) => {
-      if (!Array.isArray(coords)) return coords;
-      if (typeof coords[0] === 'number') {
-        // Single coordinate [lng, lat] or [lng, lat, z]
-        return [coords[0], coords[1], getTerrainElevation(coords)];
-      }
-      // Nested array (rings, lines, etc.)
-      return coords.map(c => addElevationToCoords(c));
-    };
-
-    const transformGeometry = (geom) => {
-      if (!geom || !terrainEnabled) return geom;
-      return {
-        ...geom,
-        coordinates: addElevationToCoords(geom.coordinates)
-      };
-    };
-
-    // Transform geoJson to include z-coordinates when terrain is enabled
-    const dataWithElevation = terrainEnabled ? {
-      ...geoJson,
-      features: geoJson.features.map(f => ({
-        ...f,
-        geometry: transformGeometry(f.geometry)
-      }))
-    } : geoJson;
+    // WHY: Use pre-computed elevated geometry from async terrain sampling.
+    // This keeps terrain queries off the render path for better performance.
+    // Fall back to original geoJson if elevated data isn't ready yet.
+    const dataWithElevation = (terrainEnabled && elevatedGeoJson) ? elevatedGeoJson : geoJson;
 
     const editableLayer = new EditableGeoJsonLayer({
       id: 'editable-geojson',
@@ -902,56 +964,18 @@ function MapComponent() {
     });
 
     // Ground Route layer (follows terrain using PathLayer with dense terrain sampling)
-    // WHY: Use PathLayer for consistent screen-space width, but sample terrain at many
-    // points along the path so it follows elevation changes smoothly.
-    const groundRouteFeatures = geoJson.features.filter(f => f.properties?.featureType === 'groundRoute');
-    const groundRouteIndexMap = new Map();
-    geoJson.features.forEach((f, idx) => {
-      if (f.properties?.featureType === 'groundRoute') {
-        groundRouteIndexMap.set(f, idx);
-      }
-    });
-
-    // Helper: interpolate points along a line segment for finer terrain sampling
-    const interpolateSegment = (p1, p2, numPoints) => {
-      const points = [];
-      for (let i = 0; i <= numPoints; i++) {
-        const t = i / numPoints;
-        points.push([
-          p1[0] + (p2[0] - p1[0]) * t,
-          p1[1] + (p2[1] - p1[1]) * t
-        ]);
-      }
-      return points;
-    };
-
-    const INTERPOLATION_POINTS = 15; // points per segment for smooth terrain following
-
-    // Build dense paths with terrain elevations for each ground route
-    const groundRouteData = groundRouteFeatures.map(feature => {
-      const coords = feature.geometry.coordinates;
-      if (!Array.isArray(coords) || coords.length < 2) {
-        return { feature, featureIndex: groundRouteIndexMap.get(feature), densePath: [] };
-      }
-      
-      // Build dense point list with terrain elevations
-      const densePoints = [];
-      for (let i = 0; i < coords.length - 1; i++) {
-        const segmentPoints = interpolateSegment(coords[i], coords[i + 1], INTERPOLATION_POINTS);
-        // Avoid duplicating points at segment boundaries
-        if (i > 0) segmentPoints.shift();
-        segmentPoints.forEach(p => {
-          const elev = getTerrainElevation(p);
-          densePoints.push([p[0], p[1], elev]); // terrain elevation baked in
-        });
-      }
-      
-      return {
-        feature,
-        featureIndex: groundRouteIndexMap.get(feature),
-        densePath: densePoints
-      };
-    });
+    // WHY: Use pre-computed dense paths from async terrain sampling.
+    // The paths are sampled at many points along the route for smooth elevation following.
+    const groundRouteData = (terrainEnabled && groundRoutePathsCache.length > 0)
+      ? groundRoutePathsCache
+      : geoJson.features
+          .filter(f => f.properties?.featureType === 'groundRoute')
+          .map((feature, idx) => {
+            const coords = feature.geometry?.coordinates || [];
+            // Flat fallback - no terrain elevation
+            const flatPath = coords.map(c => [c[0], c[1], 0]);
+            return { feature, featureIndex: idx, densePath: flatPath };
+          });
 
     const groundRouteLayer = new PathLayer({
       id: 'groundRoute-path',
@@ -980,7 +1004,7 @@ function MapComponent() {
       // WHY: Sync internal deck.gl cursor state with our active mode
       getCursor: () => (activeMode !== 'view' ? (activeMode === 'modify' ? 'grab' : 'crosshair') : 'auto')
     });
-  }, [geoJson, activeMode, selectedFeatureIndexes, terrainEnabled, mapIdleToken]);
+  }, [geoJson, activeMode, selectedFeatureIndexes, terrainEnabled, elevatedGeoJson, groundRoutePathsCache]);
 
 
   // ── 5. Native MapLibre Terrain Helpers ──
