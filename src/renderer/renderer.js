@@ -1426,7 +1426,42 @@ function MapComponent() {
             setSelectedFeatureIndexes([]);
             setActiveMode('view');
           }
-        }, '\u{1F5D1}\uFE0F Delete')
+        }, '\u{1F5D1}\uFE0F Delete'),
+        // Divider
+        React.createElement('div', {
+          style: { height: '1px', background: '#48484a', margin: '4px 0' }
+        }),
+        // Copy Coordinates option
+        React.createElement('div', {
+          style: {
+            padding: '8px 14px',
+            color: '#ccc',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            transition: 'all 0.15s',
+            borderLeft: '2px solid transparent',
+            fontFamily: SYSTEM_FONT
+          },
+          onMouseEnter: (e) => { 
+            e.currentTarget.style.background = 'rgba(100, 116, 139, 0.2)';
+            e.currentTarget.style.borderLeftColor = '#64748b';
+            e.currentTarget.style.color = '#fff';
+          },
+          onMouseLeave: (e) => { 
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.borderLeftColor = 'transparent';
+            e.currentTarget.style.color = '#ccc';
+          },
+          onClick: () => {
+            const coords = missionMenu.lngLat;
+            if (coords) {
+              navigator.clipboard.writeText(`${coords[1].toFixed(6)},${coords[0].toFixed(6)}`);
+            }
+            setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null, featureIndex: null });
+          }
+        }, '\u{1F4CB} Copy Coordinates')
       ) :
       // Add element menu (when right-clicking on empty space)
       React.createElement(React.Fragment, null,
@@ -1489,7 +1524,42 @@ function MapComponent() {
               }
             }
           }, MODES[key].label);
-        })
+        }),
+        // Divider
+        React.createElement('div', {
+          style: { height: '1px', background: '#48484a', margin: '4px 0' }
+        }),
+        // Copy Coordinates option
+        React.createElement('div', {
+          style: {
+            padding: '8px 14px',
+            color: '#ccc',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            transition: 'all 0.15s',
+            borderLeft: '2px solid transparent',
+            fontFamily: SYSTEM_FONT
+          },
+          onMouseEnter: (e) => { 
+            e.currentTarget.style.background = 'rgba(100, 116, 139, 0.2)';
+            e.currentTarget.style.borderLeftColor = '#64748b';
+            e.currentTarget.style.color = '#fff';
+          },
+          onMouseLeave: (e) => { 
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.borderLeftColor = 'transparent';
+            e.currentTarget.style.color = '#ccc';
+          },
+          onClick: () => {
+            const coords = missionMenu.lngLat;
+            if (coords) {
+              navigator.clipboard.writeText(`${coords[1].toFixed(6)},${coords[0].toFixed(6)}`);
+            }
+            setMissionMenu({ visible: false, x: 0, y: 0, lngLat: null, featureIndex: null });
+          }
+        }, '\u{1F4CB} Copy Coordinates')
       )
     )
     ), // End mapViewportStyle div
