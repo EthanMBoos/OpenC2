@@ -114,7 +114,7 @@ function MapComponent() {
   const [selectedFeatureIndexes, setSelectedFeatureIndexes] = React.useState([]);
   const [missionMenu, setMissionMenu] = React.useState({ visible: false, x: 0, y: 0, lngLat: null, featureIndex: null });
   const [showMissionFlyout, setShowMissionFlyout] = React.useState(false);
-  const [cursorCoords, setCursorCoords] = React.useState(null);
+  const coordsSpanRef = React.useRef(null);
   const [showHelpOverlay, setShowHelpOverlay] = React.useState(false);
   
   // ── Async Terrain Sampling State ──
@@ -183,11 +183,15 @@ function MapComponent() {
     if (!map) return;
 
     const handleMouseMove = (e) => {
-      setCursorCoords({ lng: e.lngLat.lng, lat: e.lngLat.lat });
+      if (coordsSpanRef.current) {
+        coordsSpanRef.current.textContent = `${e.lngLat.lat.toFixed(6)}, ${e.lngLat.lng.toFixed(6)}`;
+      }
     };
 
     const handleMouseLeave = () => {
-      setCursorCoords(null);
+      if (coordsSpanRef.current) {
+        coordsSpanRef.current.textContent = '—';
+      }
     };
 
     map.on('mousemove', handleMouseMove);
@@ -1907,11 +1911,10 @@ function MapComponent() {
         React.createElement('span', null, `${activeMode.charAt(0).toUpperCase() + activeMode.slice(1)} mode`)
       ),
       // Right side - coordinates
-      React.createElement('span', { style: { color: '#8e8e93' } }, 
-        cursorCoords 
-          ? `${cursorCoords.lat.toFixed(6)}, ${cursorCoords.lng.toFixed(6)}`
-          : '—'
-      )
+      React.createElement('span', { 
+        ref: coordsSpanRef,
+        style: { color: '#8e8e93', fontVariantNumeric: 'tabular-nums' } 
+      }, '—')
     )
   );
 }
