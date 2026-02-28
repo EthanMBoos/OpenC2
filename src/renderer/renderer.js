@@ -75,6 +75,19 @@ function MapComponent() {
   const terrainEnabledRef = React.useRef(false);
   const drawJustFinishedRef = React.useRef(false);
   const satelliteInitRef = React.useRef(true);
+  const cameraControlRef = React.useRef({ 
+    active: false, 
+    lastX: 0, 
+    lastY: 0,
+    source: null // 'middle', 'right', or 'option'
+  });
+  const rightClickRef = React.useRef({
+    startTime: 0,
+    startX: 0,
+    startY: 0,
+    isCameraMode: false,
+    pendingMenu: null // Stores event coords if menu was deferred
+  });
 
   const [terrainEnabled, setTerrainEnabled] = React.useState(false);
   const [satelliteEnabled, setSatelliteEnabled] = React.useState(false);
@@ -223,12 +236,18 @@ function MapComponent() {
       try {
         const picked = overlay.pickObject({ x, y });
         if (picked) {
-          // Handle wall segment picks (geofence curtain)
+          // Handle wall segment picks (geofence curtain, NFZ walls, etc.)
           if (picked.object && picked.object.featureIndex != null) {
             return picked.object.featureIndex;
           }
           // Handle regular feature picks (EditableGeoJsonLayer)
           if (picked.index != null && picked.index >= 0) {
+            // Geofences should only be selectable via their walls/border layers,
+            // not from clicking the invisible fill area in EditableGeoJsonLayer
+            const feature = geoJson.features[picked.index];
+            if (feature?.properties?.featureType === 'geofence') {
+              return null;
+            }
             return picked.index;
           }
         }
@@ -287,15 +306,131 @@ function MapComponent() {
       }
     };
 
-    // Handle right-click: always show context menu
-    const handleContextMenu = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+    // ── Camera orbit/pan helper ──
+    const HOLD_THRESHOLD = 200; // ms - hold longer than this to enable camera mode
+    
+    const doCameraMove = (dx, dy) => {
+      // In 3D mode (terrain enabled), control pitch and bearing
+      // In 2D mode, pan the map
+      if (terrainEnabledRef.current) {
+        const currentBearing = map.getBearing();
+        const currentPitch = map.getPitch();
+        map.setBearing(currentBearing - dx * 0.5);
+        map.setPitch(Math.max(0, Math.min(85, currentPitch - dy * 0.5)));
+      } else {
+        map.panBy([-dx, -dy], { animate: false });
+      }
+    };
+
+    const enterCameraMode = (x, y, source) => {
+      cameraControlRef.current = {
+        active: true,
+        lastX: x,
+        lastY: y,
+        source
+      };
+      container.style.cursor = 'grabbing';
+    };
+
+    const exitCameraMode = () => {
+      cameraControlRef.current.active = false;
+      cameraControlRef.current.source = null;
+      container.style.cursor = '';
+    };
+
+    // ── Mouse down: middle = instant camera, right = start hold detection, option+left = trackpad camera ──
+    const handleMouseDown = (e) => {
+      // Middle mouse: instant camera mode
+      if (e.button === 1) {
+        e.preventDefault();
+        enterCameraMode(e.clientX, e.clientY, 'middle');
+        return;
+      }
       
+      // Option/Alt + left click: camera mode (trackpad-friendly)
+      if (e.button === 0 && e.altKey) {
+        e.preventDefault();
+        enterCameraMode(e.clientX, e.clientY, 'option');
+        return;
+      }
+      
+      // Right mouse: record start time for hold detection
+      if (e.button === 2) {
+        rightClickRef.current = {
+          startTime: Date.now(),
+          startX: e.clientX,
+          startY: e.clientY,
+          isCameraMode: false,
+          pendingMenu: null
+        };
+      }
+    };
+
+    const handleMouseMove = (e) => {
+      // Option+left drag: handle camera if active
+      if (cameraControlRef.current.source === 'option' && !(e.buttons & 1)) {
+        exitCameraMode();
+        return;
+      }
+      
+      // If right button held and past threshold, enter camera mode
+      if ((e.buttons & 2) && !cameraControlRef.current.active) {
+        const elapsed = Date.now() - rightClickRef.current.startTime;
+        if (elapsed > HOLD_THRESHOLD) {
+          rightClickRef.current.isCameraMode = true;
+          enterCameraMode(e.clientX, e.clientY, 'right');
+        }
+      }
+      
+      // Handle active camera control (from middle, right, or option+left)
+      if (cameraControlRef.current.active) {
+        const dx = e.clientX - cameraControlRef.current.lastX;
+        const dy = e.clientY - cameraControlRef.current.lastY;
+        cameraControlRef.current.lastX = e.clientX;
+        cameraControlRef.current.lastY = e.clientY;
+        doCameraMove(dx, dy);
+      }
+    };
+
+    const handleMouseUp = (e) => {
+      // Middle mouse release
+      if (e.button === 1 && cameraControlRef.current.source === 'middle') {
+        exitCameraMode();
+        return;
+      }
+      
+      // Option+left mouse release
+      if (e.button === 0 && cameraControlRef.current.source === 'option') {
+        exitCameraMode();
+        return;
+      }
+      
+      // Right mouse release
+      if (e.button === 2) {
+        const wasCameraMode = rightClickRef.current.isCameraMode || cameraControlRef.current.source === 'right';
+        
+        if (cameraControlRef.current.source === 'right') {
+          exitCameraMode();
+        }
+        
+        // If we have a pending menu and didn't use camera mode, show it now
+        if (rightClickRef.current.pendingMenu && !wasCameraMode) {
+          const { clientX, clientY } = rightClickRef.current.pendingMenu;
+          showContextMenuAt(clientX, clientY);
+        }
+        
+        // Reset
+        rightClickRef.current.isCameraMode = false;
+        rightClickRef.current.pendingMenu = null;
+      }
+    };
+    
+    // Helper to show context menu at given coordinates
+    const showContextMenuAt = (clientX, clientY) => {
       try {
         const rect = container.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
 
         // If currently drawing, cancel the drawing and return to view mode
         if (activeMode !== 'view' && activeMode !== 'modify') {
@@ -313,8 +448,8 @@ function MapComponent() {
           setSelectedFeatureIndexes([featureIdx]);
           setMissionMenu({ 
             visible: true, 
-            x: e.clientX, 
-            y: e.clientY, 
+            x: clientX, 
+            y: clientY, 
             lngLat: [lngLat.lng, lngLat.lat],
             featureIndex: featureIdx 
           });
@@ -326,19 +461,56 @@ function MapComponent() {
           }
           setMissionMenu({ 
             visible: true, 
-            x: e.clientX, 
-            y: e.clientY, 
+            x: clientX, 
+            y: clientY, 
             lngLat: [lngLat.lng, lngLat.lat],
             featureIndex: null 
           });
         }
       } catch (err) {
-        console.error('Right-click handler error:', err);
+        console.error('Context menu error:', err);
       }
+    };
+
+    // ── Right-click: suppress native menu, handle our own logic ──
+    const handleContextMenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const now = Date.now();
+      const elapsed = now - rightClickRef.current.startTime;
+      
+      // If right button is still held, defer menu decision to mouseup
+      if (e.buttons & 2) {
+        rightClickRef.current.pendingMenu = { clientX: e.clientX, clientY: e.clientY };
+        return;
+      }
+      
+      const wasCameraMode = rightClickRef.current.isCameraMode || cameraControlRef.current.source === 'right';
+      
+      // If startTime is stale (>1 second ago), this is likely a trackpad tap
+      // which fires contextmenu without mousedown - always show menu
+      const isTrackpadTap = elapsed > 1000;
+      
+      // If we held long enough (but not a stale/trackpad tap) or were in camera mode, suppress menu
+      if (!isTrackpadTap && (elapsed > HOLD_THRESHOLD || wasCameraMode)) {
+        rightClickRef.current.isCameraMode = false;
+        exitCameraMode();
+        return;
+      }
+      
+      // Reset for next click
+      rightClickRef.current.isCameraMode = false;
+      
+      // Show the menu
+      showContextMenuAt(e.clientX, e.clientY);
     };
 
     // Handle single click: select feature or deselect
     const handleClick = (e) => {
+      // Ignore clicks with Option/Alt held (used for camera control)
+      if (e.altKey) return;
+      
       // Close menu if visible
       if (missionMenu.visible) {
         setMissionMenu(prev => ({ ...prev, visible: false }));
@@ -393,15 +565,30 @@ function MapComponent() {
       }
     };
 
+    // Clean up on mouse leave
+    const handleMouseLeave = () => {
+      rightClickRef.current.isCameraMode = false;
+      rightClickRef.current.pendingMenu = null;
+      exitCameraMode();
+    };
+
     // WHY: We bind to the native DOM element to ensure we catch events
     // before the MapLibre canvas or WebGL context has a chance to call stopPropagation()
     container.addEventListener('dblclick', handleDblClick);
+    container.addEventListener('mousedown', handleMouseDown);
+    container.addEventListener('mousemove', handleMouseMove);
+    container.addEventListener('mouseup', handleMouseUp);
+    container.addEventListener('mouseleave', handleMouseLeave);
     container.addEventListener('contextmenu', handleContextMenu);
     container.addEventListener('click', handleClick);
     window.addEventListener('keydown', handleKeyDown);
 
     return () => {
       container.removeEventListener('dblclick', handleDblClick);
+      container.removeEventListener('mousedown', handleMouseDown);
+      container.removeEventListener('mousemove', handleMouseMove);
+      container.removeEventListener('mouseup', handleMouseUp);
+      container.removeEventListener('mouseleave', handleMouseLeave);
       container.removeEventListener('contextmenu', handleContextMenu);
       container.removeEventListener('click', handleClick);
       window.removeEventListener('keydown', handleKeyDown);
@@ -640,6 +827,7 @@ function MapComponent() {
       getWidth: 3,
       widthMinPixels: 2,
       pickable: true, // Enable picking on border for geofence selection
+      pickingRadius: 15, // Expand picking area for easier clicking
       parameters: {
         depthWriteEnabled: true,
         depthCompare: 'less-equal'
