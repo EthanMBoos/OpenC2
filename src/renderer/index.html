@@ -18,6 +18,7 @@
 <body>
   <div id="root"></div>
   <!-- renderer script loads React and bootstraps the app -->
-  <script>require('../../dist/renderer.bundle.js');</script>
+  <!-- Note: With contextIsolation enabled, we load the bundle via a script tag instead of require() -->
+  <script src="../../dist/renderer.bundle.js"></script>
 </body>
 </html>

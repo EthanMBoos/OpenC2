@@ -82,21 +82,23 @@ Drawing and editing geographic features directly on the map using **`@deck.gl-co
   - **NFZ (No-Fly Zone):** Red polygons with configurable floor and ceiling altitudes, rendered as 3D boxes with walls and ceiling
   - **Geofence:** Orange curtain walls (no ground fill), rendered as vertical quads with configurable altitude
   - **Search Zone:** Blue polygons with an elevated ceiling layer at configurable altitude
-  - **Route:** Emerald green line paths rendered at configurable altitude
+  - **Air Route:** Emerald green line paths rendered at configurable altitude above terrain
+  - **Ground Route:** Brown/tan line paths that follow terrain elevation for ground vehicles
   - **Search Point:** Blue point markers placed via single click
 * **Property Panel:** After drawing a feature, a side panel opens to configure altitude parameters (floor/ceiling for NFZ, altitude for others).
 * **3D Visualization Layers:** Features are rendered using `SolidPolygonLayer` for walls/ceilings and `PathLayer` for routes/borders, all with proper depth testing.
 
-### 4. The Pipeline
-* **Ingestion (Headless Gateway):** Raw UDP Datagrams are captured via a dedicated Go sidecar daemon.
-* **Processing & Caching:** The Go gateway decodes Protobuf payloads in real-time, utilizing object reuse via sync.Pool to drastically reduce garbage collection pressure and avoid repeated memory allocations, which maintains a strictly deterministic, low-latency in-memory state of the fleet.
-* **Distribution:** Clean, decoded telemetry is streamed to the frontend via a local WebSocket port listener.
-* **Visualization:** Decoded Plain Old JavaScript Objects (POJOs) pipe directly from the local stream client into a Zustand store, triggering reactive updates in the Deck.gl and MapLibre stack at a steady 60FPS.
+### 4. The Pipeline *(Planned)*
+* **Ingestion (Headless Gateway):** Raw UDP Datagrams will be captured via a dedicated Go sidecar daemon.
+* **Processing & Caching:** The Go gateway will decode Protobuf payloads in real-time, utilizing object reuse via sync.Pool to drastically reduce garbage collection pressure and avoid repeated memory allocations, maintaining a strictly deterministic, low-latency in-memory state of the fleet.
+* **Distribution:** Clean, decoded telemetry will be streamed to the frontend via a local WebSocket port listener.
+* **Visualization:** Decoded Plain Old JavaScript Objects (POJOs) will pipe directly from the local stream client into a Zustand store, triggering reactive updates in the Deck.gl and MapLibre stack at a steady 60FPS.
 
 ## 🚀 Stack
 | Layer | Technologies |
 | :--- | :--- |
 | **Frontend** | React, Electron, JavaScript |
+| **State (Telemetry)** | Zustand *(planned — for high-frequency robot data)* |
 | **Backend Gateway** | Go, Goroutines, WebSockets, sync.Pool |
 | **Graphics** | Deck.gl, MapLibre (WebGL), @deck.gl-community/editable-layers |
 | **Data** | Protobuf, PMTiles, Uint8Array Streams |
@@ -133,11 +135,12 @@ OpenC2 is a research project. We welcome contributions that focus on performance
 > In development, `npm run watch` rebuilds automatically on file changes.
 
 > **Drawing on the map**
-> Double-click on empty map space to open the **Mission Objects** context menu, then select a feature type:
+> Right-click on empty map space to open the **Mission Objects** context menu, then select a feature type:
 > - **NFZ** — Draw a no-fly zone polygon (red)
 > - **Search Zone** — Draw a search area polygon (blue)
 > - **Geofence** — Draw a geofence boundary with vertical walls (orange)
-> - **Route** — Draw a flight path line (green)
+> - **Air Route** — Draw an elevated flight path line (emerald green)
+> - **Ground Route** — Draw a terrain-following path (brown)
 > - **Search Point** — Place a point marker (blue)
 >
 > Click to place vertices, double-click to finish. After drawing, a property panel opens to configure altitude settings.

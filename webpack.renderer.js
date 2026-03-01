@@ -2,7 +2,7 @@ const path = require('path');
 
 module.exports = {
   mode: 'development',
-  target: 'electron-renderer',
+  target: 'web',  // Changed from 'electron-renderer' since contextIsolation is enabled
   entry: './src/renderer/renderer.js',
   output: {
     filename: 'renderer.bundle.js',

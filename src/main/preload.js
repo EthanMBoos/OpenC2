@@ -1,11 +1,15 @@
-// Preload script can expose safe APIs to renderer via contextBridge
-// For now it's empty but kept for future IPC
+// Preload script exposes safe APIs to renderer via contextBridge
+// This is required when contextIsolation: true (secure Electron config)
 
-// const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge } = require('electron');
 
-// contextBridge.exposeInMainWorld('electron', {
-//   ipcRenderer: {
-//     send: (channel, data) => ipcRenderer.send(channel, data),
-//     on: (channel, func) => ipcRenderer.on(channel, (event, ...args) => func(...args))
-//   }
-// });
+// Expose a minimal API to the renderer process
+// Add WebSocket/IPC methods here when implementing Go Gateway integration
+contextBridge.exposeInMainWorld('electron', {
+  platform: process.platform,
+  // Placeholder for future telemetry bridge
+  // telemetry: {
+  //   onUpdate: (callback) => ipcRenderer.on('telemetry-update', (_, data) => callback(data)),
+  //   connect: (port) => ipcRenderer.send('telemetry-connect', port)
+  // }
+});
