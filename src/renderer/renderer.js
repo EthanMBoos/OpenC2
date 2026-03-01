@@ -710,7 +710,98 @@ function MapComponent() {
       });
   }, [geoJson, terrainEnabled]);
 
-  // ── 4. Render Deck.gl Layers ──
+  // ── 4. Memoized Data Transformations ──
+  // WHY: Use pre-computed elevated geometry from async terrain sampling.
+  // This keeps terrain queries off the render path for better performance.
+  // Fall back to original geoJson if elevated data isn't ready yet.
+  const dataWithElevation = React.useMemo(() => {
+    return (terrainEnabled && elevatedGeoJson) ? elevatedGeoJson : geoJson;
+  }, [terrainEnabled, elevatedGeoJson, geoJson]);
+
+  // WHY: Memoize expensive 3D geometry calculations separately from layer instantiation.
+  // This prevents recalculating thousands of vertices when only selection/mode changes.
+  // Deck.gl does shallow prop comparison - new arrays trigger GPU buffer re-uploads.
+  const zonedLayerData = React.useMemo(() => {
+    const zonedFeatures = dataWithElevation.features.filter(f => 
+      ['geofence', 'nfz', 'searchZone'].includes(f.properties?.featureType)
+    );
+
+    const zonedIndexMap = new Map();
+    dataWithElevation.features.forEach((f, idx) => {
+      if (['geofence', 'nfz', 'searchZone'].includes(f.properties?.featureType)) {
+        zonedIndexMap.set(f, idx);
+      }
+    });
+
+    // Color definitions per feature type [R, G, B, A]
+    const STYLE_MAP = {
+      geofence:   { wall: [255, 165, 0, 100], border: [255, 165, 0, 255], cap: null },
+      nfz:        { wall: [220, 53, 69, 90],  border: [220, 53, 69, 255], cap: [220, 53, 69, 60] },
+      searchZone: { wall: [59, 130, 246, 80], border: [59, 130, 246, 255], cap: [59, 130, 246, 50] }
+    };
+
+    const wallSegments = [];
+    const borderData = [];
+    const ceilingData = [];
+
+    zonedFeatures.forEach(feature => {
+      const coords = feature.geometry.coordinates[0] || feature.geometry.coordinates;
+      if (!Array.isArray(coords) || coords.length < 2) return;
+
+      const type = feature.properties?.featureType;
+      const featureIndex = zonedIndexMap.get(feature);
+      const style = STYLE_MAP[type];
+
+      let baseOffset = 0;
+      let topOffset = feature.properties?.altitude || (type === 'geofence' ? 150 : 100);
+      if (type === 'nfz') {
+        baseOffset = feature.properties?.floor || 0;
+        topOffset = feature.properties?.ceiling || 400;
+      }
+
+      borderData.push({
+        featureIndex,
+        color: style.border,
+        path: coords.map(c => [c[0], c[1], (c[2] || 0) + topOffset])
+      });
+
+      if (style.cap) {
+        ceilingData.push({
+          featureIndex,
+          color: style.cap,
+          polygon: coords.map(c => [c[0], c[1], (c[2] || 0) + topOffset])
+        });
+      }
+
+      const isClosed = coords[0][0] === coords[coords.length - 1][0] && 
+                       coords[0][1] === coords[coords.length - 1][1];
+      const loopCount = isClosed ? coords.length - 1 : coords.length;
+
+      for (let i = 0; i < loopCount; i++) {
+        const p1 = coords[i];
+        const p2 = coords[(i + 1) % coords.length];
+        const baseZ1 = (p1[2] || 0) + baseOffset;
+        const baseZ2 = (p2[2] || 0) + baseOffset;
+        const topZ1 = (p1[2] || 0) + topOffset;
+        const topZ2 = (p2[2] || 0) + topOffset;
+
+        wallSegments.push({
+          featureIndex,
+          color: style.wall,
+          polygon: [
+            [p1[0], p1[1], baseZ1],
+            [p2[0], p2[1], baseZ2],
+            [p2[0], p2[1], topZ2],
+            [p1[0], p1[1], topZ1]
+          ]
+        });
+      }
+    });
+
+    return { wallSegments, borderData, ceilingData };
+  }, [dataWithElevation]);
+
+  // ── 5. Render Deck.gl Layers ──
   React.useEffect(() => {
     const overlay = deckOverlayRef.current;
     const map = mapRef.current;
@@ -723,11 +814,6 @@ function MapComponent() {
       fill: colorDef.tentativeFill || colorDef.fill,
       line: colorDef.tentativeLine || colorDef.line
     };
-
-    // WHY: Use pre-computed elevated geometry from async terrain sampling.
-    // This keeps terrain queries off the render path for better performance.
-    // Fall back to original geoJson if elevated data isn't ready yet.
-    const dataWithElevation = (terrainEnabled && elevatedGeoJson) ? elevatedGeoJson : geoJson;
 
     const editableLayer = new EditableGeoJsonLayer({
       id: 'editable-geojson',
@@ -827,92 +913,10 @@ function MapComponent() {
       } : {}
     });
 
-    // ── Unified 3D Zoned Layers (Geofence, NFZ, SearchZone) ──
-    const zonedFeatures = dataWithElevation.features.filter(f => 
-      ['geofence', 'nfz', 'searchZone'].includes(f.properties?.featureType)
-    );
-
-    const zonedIndexMap = new Map();
-    dataWithElevation.features.forEach((f, idx) => {
-      if (['geofence', 'nfz', 'searchZone'].includes(f.properties?.featureType)) {
-        zonedIndexMap.set(f, idx);
-      }
-    });
-
-    // Color definitions per feature type [R, G, B, A]
-    // Wall opacity matches original fill colors for consistent appearance
-    const STYLE_MAP = {
-      geofence:   { wall: [255, 165, 0, 100], border: [255, 165, 0, 255], cap: null }, // No top cap
-      nfz:        { wall: [220, 53, 69, 90],  border: [220, 53, 69, 255], cap: [220, 53, 69, 60] },
-      searchZone: { wall: [59, 130, 246, 80], border: [59, 130, 246, 255], cap: [59, 130, 246, 50] }
-    };
-
-    const wallSegments = [];
-    const borderData = [];
-    const ceilingData = [];
-
-    zonedFeatures.forEach(feature => {
-      const coords = feature.geometry.coordinates[0] || feature.geometry.coordinates;
-      if (!Array.isArray(coords) || coords.length < 2) return;
-
-      const type = feature.properties?.featureType;
-      const featureIndex = zonedIndexMap.get(feature);
-      const style = STYLE_MAP[type];
-
-      // Determine elevation profile
-      let baseOffset = 0;
-      let topOffset = feature.properties?.altitude || (type === 'geofence' ? 150 : 100);
-      if (type === 'nfz') {
-        baseOffset = feature.properties?.floor || 0;
-        topOffset = feature.properties?.ceiling || 400;
-      }
-
-      // 1. Build Border Path (Top edge)
-      borderData.push({
-        featureIndex,
-        color: style.border,
-        path: coords.map(c => [c[0], c[1], (c[2] || 0) + topOffset])
-      });
-
-      // 2. Build Top Cap / Ceiling (If applicable)
-      if (style.cap) {
-        ceilingData.push({
-          featureIndex,
-          color: style.cap,
-          polygon: coords.map(c => [c[0], c[1], (c[2] || 0) + topOffset])
-        });
-      }
-
-      // 3. Build Wall Quads
-      const isClosed = coords[0][0] === coords[coords.length - 1][0] && 
-                       coords[0][1] === coords[coords.length - 1][1];
-      const loopCount = isClosed ? coords.length - 1 : coords.length;
-
-      for (let i = 0; i < loopCount; i++) {
-        const p1 = coords[i];
-        const p2 = coords[(i + 1) % coords.length];
-        const baseZ1 = (p1[2] || 0) + baseOffset;
-        const baseZ2 = (p2[2] || 0) + baseOffset;
-        const topZ1 = (p1[2] || 0) + topOffset;
-        const topZ2 = (p2[2] || 0) + topOffset;
-
-        wallSegments.push({
-          featureIndex,
-          color: style.wall,
-          polygon: [
-            [p1[0], p1[1], baseZ1],
-            [p2[0], p2[1], baseZ2],
-            [p2[0], p2[1], topZ2],
-            [p1[0], p1[1], topZ1]
-          ]
-        });
-      }
-    });
-
-    // ── Instantiate Unified Layers ──
+    // ── Instantiate Unified 3D Zoned Layers (using memoized data) ──
     const unifiedWallLayer = new SolidPolygonLayer({
       id: 'unified-walls',
-      data: wallSegments,
+      data: zonedLayerData.wallSegments,
       _full3d: true,
       getPolygon: d => d.polygon,
       getFillColor: d => d.color,
@@ -922,7 +926,7 @@ function MapComponent() {
 
     const unifiedBorderLayer = new PathLayer({
       id: 'unified-borders',
-      data: borderData,
+      data: zonedLayerData.borderData,
       getPath: d => d.path,
       getColor: d => d.color,
       getWidth: 3,
@@ -934,7 +938,7 @@ function MapComponent() {
 
     const unifiedCeilingLayer = new SolidPolygonLayer({
       id: 'unified-ceilings',
-      data: ceilingData,
+      data: zonedLayerData.ceilingData,
       getPolygon: d => d.polygon,
       getFillColor: d => d.color,
       pickable: true,
@@ -1014,10 +1018,10 @@ function MapComponent() {
       // WHY: Sync internal deck.gl cursor state with our active mode
       getCursor: () => (activeMode !== 'view' ? (activeMode === 'modify' ? 'grab' : 'crosshair') : 'auto')
     });
-  }, [geoJson, activeMode, selectedFeatureIndexes, terrainEnabled, elevatedGeoJson, groundRoutePathsCache]);
+  }, [activeMode, selectedFeatureIndexes, terrainEnabled, dataWithElevation, zonedLayerData, groundRoutePathsCache]);
 
 
-  // ── 5. Native MapLibre Terrain Helpers ──
+  // ── 6. Native MapLibre Terrain Helpers ──
   // WHY: We use MapLibre's native terrain instead of deck.gl's TerrainLayer 
   // because it's significantly faster and doesn't cause transparent compositing bugs.
   function applyTerrain(map) {
